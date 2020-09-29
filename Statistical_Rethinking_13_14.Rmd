@@ -1,0 +1,157 @@
+---
+title: "Chapters 13 & 14"
+subtitle: "Statistical Rethinking: Bayesian inference and data analysis using R and Stan"
+author: "John Jackson"
+date: "September 2020"
+output: 
+   rmdformats::material:
+      highlight: haddock
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This markdown serves as a companion to Chapters 13 and 14 of the Statistical Rethinking book by Professor Richard McElreath as presented on [YouTube](https://www.youtube.com/channel/UCNJK6_DZvcMqNSzQdEkzvzA) from his Winter 2019 lectures 15-18, plus additional notes from the book. Chapter13 starts with lecture 15. You need the following packages:
+
+```{r packages, warning=FALSE, message = F}
+require(tidyverse)
+require(gridExtra)
+require(ggridges)
+require(rstan)
+require(rethinking)
+require(dagitty)
+```
+
+***
+
+# Lecture 15 - Models with Memory
+
+### An introduction to multi-level Bayesian models
+
+Musicologist called Clive Wearing. In 1985 he got herpes but in his brain. It caused brain damage, affecting much of his hippocampus and he got **anterograde** amnesia. He kept old memories but lost the ability to form new memories. Can still play the piano but can't remember what happened one minute ago. The statistical models we have considered so far, which have all been **fixed effects** models have also had anterograde amnesia. Any time we have moved to a new cluster in our data, the model forgets what it has seen so far.
+
+**Multilevel** models are models that remember. By remember they pool information. Here, the properties of clusters of information in our data come from a population. The inferred population defines pooling. If previous clusters improve your guess about a new clusters, then you want to be using this pooling. However, the order that the clusters are 'visited' does not matter. Imagine you're visiting cafes in various European countries. In a lot of ways they are similar. Berlin and Paris have different types of cafe. How long does the coffee take to come? If we've never been to a cafe, the first time we go we get an expectation. If our coffee took 5 minutes to get to us in Paris, you have an expectation about how long coffee should take to get to you in Berlin, but not exactly the same. The fixed effect only method, we would have no expectation. Also, when we visit either cafe, we also update information **overall** regarding how long coffee takes to arrive generally - so we update our expectation for cafes in both Berlin *and* Paris. We're going to do this statistically.
+
+Consider this more explicitly. We programmed a robot to visit two cafes and estimate the waiting time with a Bayesian model. The robot begins with a vague prior for the waiting time with a mean of 5 mins and SD of 1. At the first cafe the robot observes a waiting time of 4 mins, and updates its prior using Bayes theorem, giving it a posterior. However, when it moves to the second cafe, what should it's prior be? It could just use the same prior as for the first cafe. However, this assumes implicitly that the cafes have the same average waiting time. So, the robot can do better by treating the cafes as a population, and using the distribution of waiting times across cafes as it's prior expectation. So here, the prior is actually **learned from the data**. So the robot tracks the parameters of waiting times at each cafe, as well as at least two parameters to describe the population of cafes (mean and sd). When the robot observes new cafes, everything is updated, both the estimates for each cafe and the estimates for the population.
+
+How much information is transferred across our units (like cafes) is **dependent on their variation**. If you constantly eat spicy chilli's, you get less stomach bugs. However, they aren't consistent, and the spiciness can vary a lot. Chillis are variable. So if you use your expectation from the whole population, harder to learn and update. Learning this variation is key.
+
+## Cause and Reconciliation
+
+We're fighting a battle on two fronts remember, where there is no unique solution but lots of good ones:
+
+1. Causal inference - don't make causal salad
+2. Functional inference - estimation not trivial
+
+So in multilevel model, we're addressing the second one. trying to get more precise estimates. This is assuming our causal model is correct...
+
+As a default we should use multilevel regression. Often little harm in doing this, and more often makes a big difference. Opt-in and opt-out of organ donor lists in Europe. Germany has high percentage of people who think people should donate their organs, but are opt-in, and so their actual organ donation consent percentage (legally) is extremely low. The default is important. Multilevel models are like opt-out systems. Usually estimate better and should have to justify **not** using them. This isn't how things are done though, often assumed that we should start simple and work up.
+
+## The benefits of multilevel models
+
+Dealing with clustering, the Russian dolls. *Pseudoreplication*. Benefits discussed in chapter one repeated here for clarity:
+
+1. **Improved estimates for repeated sampling** - When more than one observation arises from the same individual, location, or time, then single-level models either horribly underfit or overfit the data.
+2. **Improved estimates for unbalanced sampling** - When some of these observations are sampled more than others, multilevel models automatically deals with uncertainty across these different levels. This prevents oversampled clusters dominating our inference.
+3. **Estimates of variation** - If our research questions include variation among individuals or groups, multilevel models explicitly model variation.
+4. **Avoid averaging, retain variation** - Frequently, people average data over clusters to construct variables for analysis in fixed-effects models. Removing variation can be dangerous and our data transformation can be arbitrary. Multilevel models preserve this uncertainty and quantify the variation.
+
+Examples from what we've looked at before - !Kung from families, species in clades, nations in continents, applicants in departments.
+
+Going to learn how shrinkage and pooling work. Now we have to describe the distribution that we think the characteristics of the clusters follow. Maximum entropy helps us here. Also our estimation is trickier, which is aided by our MCMC algorithms with `ulam`. Also a bit trickier to understand because we make predictions at different (multi) levels of our data, making comparisons with WAIC etc. slightly more subtle. We have to make more descisions about the parameters we want to compare for example.
+
+## Example - Multilevel tadpoles
+
+Reed frog tadpoles, quasi-experiment. Eggs suspended on leaves above buckets (ponds). Tadpoles fall in to the water below. Different densities and sizes and predation (presence) in each of the ponds. Interested in the number of surviving tadpoles. Focussing on variation across tanks.
+
+Structure: Tadpoles in tanks at different densities
+Outcome: Number surviving (binomial)
+
+We will ignore density and predation for now. We want to know if different tanks have different survival.
+
+Two basic models: 1. Dummy variable for each tank (done this previously) and 2. Multilevel model with varying intercepts.
+
+Our basic model would be like this
+
+$$S_i \sim \operatorname{Binomial}(N_i, p_i)$$
+$$\operatorname{logit}(p_i) = \alpha_{\operatorname{TANK}[i]}$$
+$$\alpha_j \sim \operatorname{Normal}(0,1.5) \,\,\,\,\,\,\,\,\,\,\, \operatorname{for}j = 1..48$$
+Where our survival $S$ for each observation $i$ is given by a binomial distribution with probability $p$, and we estimate a different intercept for each tank $j$ (or pond). Only the data from the tank at hand informs the $\alpha$ from the tank. But surely we expect that survival is linked between.
+
+Let implement this then. First lets look at the data
+
+```{r tadpole data load and clean, fig.width = 11, fig.height = 5}
+data(reedfrogs)
+tadpole <- reedfrogs %>% 
+   mutate(tank = 1:n())
+
+# basic plot
+ggplot(tadpole, aes(x = tank, y = surv, fill = surv)) +
+   geom_col(show.legend = F) +
+   labs(x = "Tank number", y = "Number survived") +
+   scale_x_continuous(breaks = 1:48) +
+   theme_bw(base_size = 14) +
+   theme(panel.grid = element_blank())
+
+# data as a list for our models
+tadlist <- list(S = tadpole$surv,
+                N = tadpole$density,
+                tank = tadpole$tank)
+```
+We can see here already that there are different numbers of survivals, but very different numbers, probably owing to the density. But ignoring density for now, lets fit our fixed-effect only GLM.
+
+```{r tadpole fixedeff, error = F, warning= F, results = F, mesage = F}
+
+m13.1 <- ulam(alist(S ~ dbinom(N,p),
+                    logit(p) <- a[tank],
+                    a[tank] ~ dnorm(0,1.5)),
+              data = tadlist,
+              chains = 4, cores = 4,
+              log_lik = TRUE)
+
+```
+
+But now we want to **adaptively pool** information across tanks. We do this with our multilevel model. What we are going to do is allow the intercepts to vary between tanks.
+
+$$S_i \sim \operatorname{Binomial}(N_i, p_i)$$
+$$\operatorname{logit}(p_i) = \alpha_{\operatorname{TANK}[i]}$$
+
+$$\alpha_j \sim \operatorname{Normal}(\bar{\alpha},\sigma)$$
+$$\bar{\alpha} \sim \operatorname{Normal}(0,1.5)$$
+$$\sigma \sim \operatorname{Exponential}(1)$$
+We allow the intercepts to vary by adding parameters into our intercepts distribution. This addition of parameters is the multilevel bit. Each $\alpha_j$ has a prior with parameters. And then these parameters have priors themselves, so its just parameters within parameters, priors within priors. This is called a **hyperprior**. Survival across tanks has a distribution, this distribution is the prior for each tank, and this distribution needs its own prior.
+
+## Varying intercepts
+
+Also called random intercepts. Random is silly though. So is varying. It is distinct because you **learn the prior from the data**. We regularise, but now we learn this from the data. The intercepts learn from each other and this pools across.
+
+Lets do it! It's really this easy
+
+```{r tadpole varying intercepts, error = F, warning= F, results = F, mesage = F}
+
+m13.2 <- ulam(alist(S ~ dbinom(N,p),
+                    logit(p) <- a[tank],
+                    a[tank] ~ dnorm(a_bar,sigma),
+                    a_bar ~ dnorm(0,1.5), 
+                    sigma ~ dexp(1)),
+              data = tadlist,
+              chains = 4, cores = 4,
+              log_lik = TRUE)
+
+```
+
+We get 50 parameters out of this model with `precis` (don't look at it cos it's big). Two that are a bar and sigma, and then 48 which are the per-tank intercepts. The fixed effects model would just have 48. Lets compare these models.
+
+```{r tadpole compare}
+
+compare(m13.1, m13.2, func = WAIC)
+
+```
+Our predictive performance for our varying intercepts model is better (not hugely - but definite increase). Also, note that for `pWAIC` it is lower for our multilevel model than it is for our fixed effects model. Why? Ended up with a stronger prior. Effective number is also lower than the literal number because we regularised our prior. For multilevel models, **the fit to the sample can decrease but the out of sample fit is better - more regularising**.
+
+
+
