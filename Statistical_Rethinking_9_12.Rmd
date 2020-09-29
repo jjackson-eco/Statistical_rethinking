@@ -1,0 +1,1322 @@
+---
+title: "Chapters 9-12"
+subtitle: "Statistical Rethinking: Bayesian inference and data analysis using R and Stan"
+author: "John Jackson"
+date: "September 2020"
+output: 
+   rmdformats::material:
+      highlight: haddock
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This markdown serves as a companion to Chapters 9-12 of the Statistical Rethinking book by Professor Richard McElreath as presented on [YouTube](https://www.youtube.com/channel/UCNJK6_DZvcMqNSzQdEkzvzA) from his Winter 2019 lectures 10-14, plus additional notes from the book. Chapter 9 starts with lecture 10. You need the following packages:
+
+```{r packages, warning=FALSE, message = F}
+require(tidyverse)
+require(gridExtra)
+require(ggridges)
+require(rstan)
+require(rethinking)
+require(dagitty)
+```
+
+***
+
+# Lecture 10 - Markov Chain Monte Carlo
+
+### MCMC algorithm introduction.
+
+Here we are going to introduce the new posterior approximation algorithm. Reminder, at the heart of bayesian inference, not *how* you compute the posterior, but its just *getting* the posterior. Often Bayes is thought of as MCMC, but they are different. This is just the algorithm to calculate the posterior. Easier to do the other quap algorithm and grid approximation first, to show you this. Also, quap is a very similar algorithm as lots of non-bayesian models (like hill climbing likelihood estimation algorithms with `optim()`).
+
+This Markov Chain Monte Carlo (MCMC) algorithm. Its a numerical integration method (as with quap). It is intensive for our computers, but very widely applicable. A key thing about this algorithm is its reliance on **random numbers**, which are vital for modelling e.g. stochastic proccesses. MCMC is one such method, where we are going **produce samples from the joint posterior that don't maximise anything or assume a shape (multi-variate normal) of the posterior**. This comes at the cost of computational intensiveness though.
+
+## King Markov
+
+Polynesian king, ruling an island kingdom. We'll say you are Markov. Good to be king but comes with challenges and royalty is fragile. You rule over the metropolis archipelago of islands. These islands (and their populations) are numbered and in order. You have to visit them to keep them favouring you, and you have to visit them in proportion to their population density. You aren't numerate, but you need to know how you should wander round the islands in order to keep the population in favour. Here's what your very clever advisors come up with:
+
+1. Wherever you are, each week you decide between staying put for another week or moving to another island, which is decided with the flip of a coin. This tells you whether you will move left or right, generating a *proposal* island. You consider going here.
+
+2. Send a servant to the proposal island and find out its population density.
+
+3. Now you find the population density of the current island that you are on.
+
+4. Move to the proposal island with a probability (not necessarily moving) based on the ratio of the population sizes (new vs. old), e.g. if you were at island 4 ($p_4$) and you proposed to moved to island 5 ($p_5$), your probability of movement would be $\frac {p_5}{p_4}$.
+
+Then you repeat. This is valid way to visit all the populations in proportion to their population size, in the long run atleast. This is a famous primitive example of an MCMC algorithm.
+
+We want to understand the approach, and meet the different specific algorithms. All comes down to the fact that we don't need to know the distribution of our population sizes. **In MCMC we can sample from the posterior without knowing the posterior**. We just have to use something like the approach with island, just need to evaluate the distribution close to us. We will do this learning some new machinery i.e. `Stan` and specifically `ulam`. Stan was actually a man called Stanislaw Ulam.
+
+## A simple Metropolis algorithm
+
+The king markov example is a simple **metropolis algorithm**, which we can visualise with some R code below:
+
+```{r king markov, fig.width= 9, fig.height= 4}
+num_weeks <- 1000
+positions <- rep(0,num_weeks)
+current <- 10 # to start us off
+
+for(i in 1:num_weeks){
+  # current position
+  positions[i] <- current
+  # flip coin to generate proposal (move +1 or -1)
+  proposal <- current + sample(c(-1,1), size = 1)
+  # now ensure that the archipelago is a loop (10 + 1 = 1 in this case)
+  if(proposal < 1){proposal <- 10}
+  if(proposal > 10){proposal <- 1}
+  # move?
+  prob_move <- proposal/current # here the population sizes are just the island numbers
+  current <- ifelse(runif(1)<prob_move, proposal, current)
+}
+
+# have a look
+tibble(week = 1:num_weeks, year = week/52, position = positions) %>% # convert to years
+  ggplot(aes(x = year, y = position, colour = factor(position))) +
+  geom_line(show.legend = F, aes(colour = NULL)) +
+  geom_point(size = 3, alpha = 0.4, show.legend = F) +
+  scale_y_continuous(breaks = 1:10, labels = 1:10) +
+  labs(x = "Year", y = "Island position") +
+  theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+
+The connection of these movements based on the relative probabilities forms our **chain**, the chain of visits. This is visualised with the line. This is all there is too it (for a simple example). At their simplest the algorithms for markov chains are pretty simple. You *could* do this to sample through your parameter space etc. to do this yourself - but we wont. It becomes tricky when our model is trickier.
+
+The markov chain will converge, but only in the long (sometimes very long) run. Doesn't matter which island you start on. As long as your proposals are symmetric. The **proposals being symmetric** is a key feature of the simple case Metropolis algorithm.
+
+There are several types of metropolis algorithms.
+
+In our case, the islands are **parameter values**, can be an infinite number of them. The population size is their **posterior probability**. So we are going to hop through our parameter space using a sampling technique, and estimate the relative difference in posterior probabilities for our two parameter values. The number of weeks are the **samples**.
+
+It is called Metropolis after a Greek-American mathematician called Nick Metropolis, heading a research group to develop the first application of this algorithm computationally, on a computer called MANIAC (numerical integrator key part of acronym). Two strong Women in this group. Remember them (even though they worked on the Manhattan project):
+
+> **Ariana Rosenbluth** and **Augusta Teller**
+
+So formally, for a Metropolis and MCMC approach:
+
+* Metropolis: A simple version of a MCMC approach.
+* Chain: Sequence of draws from a distribution.
+* Markov chain: History doesn't matter, just where you are now (no memory). Jumps in the chain don't have memory.
+* Monte Carlo: Random simulation.
+
+Why do it? Sometimes an integrated solution for the posterior isn't possible. Even when we can, often we cannot use it. For many examples incl. mixed models, this is the case. Optimization (quap) isn't a good strategy in high dimensions with lots of parameters - you need the full distribution. 
+
+**MCMC is not fancy. It is an old and essential technique**
+
+### MCMC strategies
+
+* Metropolis: grand-mama and the simple case.
+* Metropolis-Hastings: More general, allows asymmetric proposals.
+* Gibbs sampling (GS): Efficient version of Metropolis Hastings
+* Metropolis and Gibbs methods are 'guess and check' strategies.
+* Hamiltonian Monte Carlo (HMC): Fundamentally different.
+
+The goal of the **guess and check** strategies is to make really great proposals, so that you are constantly moving through the parameter space and quickly get a good picture of the posterior. We often make bad guesses though. **Hamiltonian** does this in a new way. It uses something called gradients. This is the one we're going to use. It's the new kid on the block.
+
+## Gibbs sampling and high-dimensional problems
+
+Just to introduce Gibbs sampling and why it isn't ideal when we have a high dimensionality i.e. lots of parameters. Gibbs sampling uses *adaptive proposals* of parameter values, which intelligently and efficiently allow you to jump around the parameter space. It does this using **conjugate pairs**, particular combinations of prior distributions and likelihoods. Conjugate pairs have analytical solutions for the posterior distribution for an individual parameter. Uses conditional values of different parameters too. The solutions of the posterior distribution at particular parameter values using conjugate pairs allows the Gibbs sampler to make very efficient and smart jumps.
+
+At high numbers of parameters, Gibbs and Metropolis algorithms become incredibly inefficient. The high number of parameters leads to relatively small regions of our total parameter space that have a high correlation in the posterior i.e. you can imagine in a 2-parameter problem that there is a narrow ridge of our two parameters with a high posterior. Because of this high correlation and such a narrow ridge, our sampler makes lots of very poor proposals with a low acceptance rate. So they get stuck. 
+
+There is also the **concentration of measure** problem. Now if you imagine your a 2 dimensional normal distribution problem. In 3D this looks like a hill, where you have higher probabilities of our two parameters up to a peak. If we now imagine that this hill is made of dirt- the point on the hill with the most dirt under it is the peak. But, if we move lower down, in the ring around the peak that we make from that new point there is now more dirt than the point of the peak. Instead of dirt, this is actually the probability mass. This is a problem because there is more probability mass of our posterior distribution at values of parameters that are not the mode than those that are (the peak, which is what we want to know about). This problem gets worse and worse with more parameters, and eventually we wont sample any points that are near the mode of the full posterior. Again, we get stuck.
+
+So, what we need ideally is MCMC algorithms that **focus on the entire posterior at once**, instead of one or a few dimensions at a time, otherwise we get stuck in a narrow region of parameter space.
+
+## Hamiltonian Monte Carlo (HMC)
+
+Hamiltonian dynamics to the rescue. Different approach to guessing and checking. Runs a physics simulation. In essence, you represent your parameter state (vector of parameter values) as a coordinate. Here in your 2 parameter problem this is just its x and y coordinate. Then, with this coordinate position, you treat the parameter value as a particle. You then flick it around a frictionless log-posterior, and record positions. The key thing however is that this is a physics simulation in which it follows the curvature of the multi-variate posterior. Here, all proposals are good proposals, and with enough runs you can estimate the full curved surface.
+
+Now an example of this.
+
+## King Monty
+
+Monty is Markov's cousin, also a king, and rules on the mainland. Instead of being islands, his territory is continuous and stretched out along a narrow valley that runs from north to south. He has a similar obligation to his cousin, in that he has to visit local villages in the valley based on their popualtion density. In the valley, people are distributed inversely proportional to the elevation i.e. most people live in the lowlands, and few live up on the slopes.
+
+Monty also doesn't want to bother with schedules and calculations, so he entrusts his gifted advisor Hamilton. Hamiltons method prevents a key flaw from Markov's method, because he doesn't stay in the same place for very long and keeps moving. He has a car and a rather unique method, using the **landscape and gravity** (the physics simulation bit) to guide the driver:
+
+* The king picks a random direction to go in, either north or south, and the car sets off at random momentum. 
+* As the vehicle goes uphill, it looses speed, slows down and when it's declining momentum forces it to it turns around.
+* Then it picks up speed on the way down again.
+* After a fixed time period the car stops and the king fulfills his duties to whoever is around him.
+* The process repeats.
+
+Stopping positions will be proportional to the population density of the valley - isn't that amazing.
+
+There is still stochasticity here, in so much as the direction and the momentum of our "particle" are chosen at random. But, the approach of following this surface (or some multi-dimensional plane) of the posterior means it is very targetted and all of our proposals are good ones.
+
+In statistics lingo:
+
+* Location is parameter values.
+* **Really** simulate motion on a firctionless surface.
+* Surface is the minus-log-posterior (forms a parabola).
+* Series of simulations that start from each others previous point.
+* Stopping points comprise valid MCMC samples.
+* These valid MCMC samples are a reflection of the shape of the minus log posterior.
+
+To do this though you need to know the local curvature of the posterior at each point. The gradient - the derivative of the direction of the minus-log-posterior. This means, in the gravity example with the car the topography of the valley sorts this out. But because our topography here is the posterior, we need to do more calculations for each of these particle movement simulations. Specifically, we need: curvature of the minus-log-posterior, 'mass' of our particle, number of leaps in a single trajectory, size of each leap (leap frog). This requires more computation, and is intensive. But, very very powerful. And, many fewer steps. So actually an efficiency gain.
+
+Another important feature here is that the sequential autocorrelation between stopping locations is very low i.e. the algorithm doesn't get stuck and require many many steps. For high-dimensional problems, very very hard to picture what this 'surface' would look like, would be some sort of hyper-sphere - but in statistics we always have target, lower dimensional outcomes that we are interested in that we can predict from posterior and make sense of the world. *Low-dimensional compression on the prediction scale that makes sense to us.* 
+
+HMC is dramatic when it breaks, tells you when its not working. Because it is a physics model, we have a strong set of expectations with energy conservatione etc. Needs to be tuned too. 
+
+## `Stan` is NUTS
+
+By controlling the step size, leap frog steps and the momentum etc, it can result with paths that leave you exactly where you left off. U-turn problem. So can be inefficient. Need to tune these parameters appropriately.
+
+This is where NUTS comes in, which stands for No U-Turn Sampler. This sampler is implemented in `Stan`. This is a C++ library. Run from within R and we can interface with it in `rethinking` too, using the `ulam` function. 
+
+It has a **Warm up phase**, figures out good step sizes and finding one to maximise the acceptance rate. Then it uses the NUTS sampler, which runs the Hamiltonian simulation with the surface both forwards and backwards in time, to ensure that the leap frog step size is optimised for each location.
+
+The code in the book (Code 9.6-9.10) gives a full breakdown of the HMC algorithm for a 2-dimensional Gaussian example. Here you can see the mechanics of how the particle simulation works (simple random sampling and movement with a trajectory).
+
+## Rugged terrain model with HMC
+
+We will now return to the terrain ruggedness and GDP example. Remember how Africa bucked this trend when we ran an interaction model between ruggedness and country ID (in or out of Africa). The full joint model is as follows:
+
+$$y_i \sim \mathcal{N}(\mu_i,\sigma)$$
+$$\mu_i =  \alpha_{C[i]} + \beta_{C[i]}r_i$$
+$$\alpha_{C[i]} \sim \mathcal{N}(1,0.1)$$
+$$\beta_{C[i]} \sim \mathcal{N}(0,0.3)$$
+$$\sigma \sim {\sf Exponential}(1)$$
+
+where, for country $i$, $y$ is their log-transformed GDP, $C$ is a categorical variable describing whether or not they are in Africa, and $r$ is their standardised terrain ruggedness (mean-centered). Note that we are now also using the standard notation for a gaussian distribution $\mathcal{N}(\mu,\sigma)$. Also note that for our interaction model, were are simply fitting separate intercept and slope terms depending on our categorical variable (again just as a reminder).
+
+To fit this using `ulam`, we need to do a little more house keeping of our data. **This is what you should do from now on!**. Store a slim (only variables in the model) version of your data with each vector separate and as a **list**, and with all your standardisations done beforehand. This is to stop wasting computing power on transformations etc. when building our markov chain.
+
+```{r rugged data prep, fig.width= 5.5, fig.height= 3.5}
+data(rugged)
+
+# variable transformations
+rugged <- rugged %>% 
+  drop_na(rgdppc_2000) %>% 
+  mutate(log_gdp_std = log(rgdppc_2000)/mean(log(rgdppc_2000)),
+         rugged_std = rugged/max(rugged),
+         cid = if_else(cont_africa == 1, 1, 2)) # stop it being 0 to ensure two intercepts
+
+# quick plot to have a look (again)
+ggplot(rugged, aes(x = rugged_std, y = log_gdp_std, colour = factor(cid))) +
+   geom_point(size = 4, alpha = 0.7) +
+   scale_colour_manual(name = NULL, values = c("firebrick", "cornflowerblue"),
+                       labels = c("Africa", "Rest of world")) +
+   labs(x = "Terrain ruggedness", y = "log GDP (as proportion of mean)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+# list of data
+rugged_list <- list(
+  log_gdp_std = rugged$log_gdp_std,
+  rugged_std = rugged$rugged_std,
+  cid = as.integer(rugged$cid)
+)
+
+str(rugged_list)
+
+```
+
+Now lets begin to estimate the posterior using `ulam`. This largely works in the same way as we fit our model using `quap`, however, we now have the other important additional options (others too) of adjusting the number of samples (`iter` and `warmup`), the number of `chains`, and the number of `cores`. The number of cores parallelises your Stan model, an runs the chains on different cores on your computer (most computers have 4). How do we know how many chains and samples to use though?
+
+#### Chains
+
+This is how many independent Markov Chains that we want to build. Each one will re-run our Hamiltonian simulation from the beginning, with a new warm-up phase. Remember, the warm-up phase is trying to maximise the acceptance rate with our step size etc. and these **are not** useful samples. In other burn in phases (for many metropolis/gibbs algorithms) in other software, these samples are proper posterior samples, but the first few are discarded. In the HMC algorithm of Stan, warm-up samples are disregarded completely. Then, all posterior samples from the inference samples of the chains are combined in our results.
+
+So, how many chains do we need? When we are starting our model out, to debug it successfully we should start with one chain. This prevents the distribution of different chains hiding malicious patterns that we don't want. Then, we want to decide whether our chains are valid and inferences made from them are useful, we use more than one. Often 4 is used. Then, for our final model inference, it doesn't actually matter too much. Live by this motto generally *one short chain to debug, four chains for verification and inference*.
+
+#### Samples
+
+This is the number of samples in your Markov chain, including your warmup (tuning of the acceptance) and the inference samples. By default, `ulam` will use `iter = 1000` and sets `warmup = iter/2`, so this will mean 500 warmup samples and 500 inference samples. Often we wont need this many for simple linear models, where our posteriors are Gaussian and we want to just get a sense of the posterior mean. However, to get a full sense of our posterior distribution, we many need many more samples.
+
+When you have run your posterior sampling with Stan, you will have additional information in the model about the sampling process and whether it has worked well. Specifically, we will have the `n_eff` and `Rhat` ($\hat{R}$) columns. The `n_eff` gives you the effective number of samples in your sampling procedure. This is basically a measure of whether or not our sample runs are anti-correlated enough. They may well be greater than the number of samples, which indicates that we don't have autocorrelation in our samples. You want this to be big, and over 200 is a good start for estimating the posterior mean. `Rhat` is a measure of whether or not our Markov chains have converged. If it is a lot over 1, it indicates that our chains didn't converge in the allotted number of samples, which is usually a bad sign (particularly for simple models). But again this is variable.
+
+Generally, the output and set up of a `ulam` wants to be as follows:
+
+> *One short chain to debug, four chains for verification and inference. A sufficient number of samples to ensure that our effective number of samples is large. An Rhat value of 1.* 
+
+## Running the Stan model
+
+So, now let us do our debugging model for the effect of terrain ruggedness on a country's GDP.
+
+```{r ulam debug rugged, error = F, warning= F, results = F, mesage = F}
+
+# Our debugging model
+m9.1 <- ulam(alist(
+   log_gdp_std ~ dnorm(mu, sigma),
+   mu <- a[cid] + b[cid]*(rugged_std - 0.215),
+   a[cid] ~ dnorm(1,0.1),
+   b[cid] ~ dnorm(0,0.3), # slope term indexed for each category
+   sigma ~ dexp(1)),
+   data = rugged_list,
+   chains = 1
+)
+
+```
+There are lots of things that we want to look at in our model results. First, we can look at the specific Stan code that was generated from our code in `rethinking`. This could be useful for more complex models, as you could just write the model in Stan yourself. We do this with `stancode`. Then, we might want to look at the output diagnostics from the Markov chain itself (suppressed in this markdown but automatic output from Stan), which would be done with `show`. The `precis` summary table gives us useful information summarizing the posterior, and also telling us about the effective number of samples and the Rhat.
+
+A very cool visualisation tool is the `traceplot` and `trankplot`. Traceplots show you the samples from the posterior in each step of the Markov chain. This is just like the travels of king Markov at the beginning. We can see how the simulation has sampled from the posterior and what we end up with. The part in grey shows the warmup samples, which are ignored for the extraction of your samples later on (posterior predictions etc.). You want this to look like a big hairy caterpillar that is completely random and quite uniform. These are really revealing for the Markov chain, and important to do in your debugging stage. Careful when you do these with multiple chains as pathologies in the Chains can be hidden by other chains.
+
+Trankplots are essentially a ranked histogram of all your sample values. So, again you want this to be random and well distributed. This is better for visualising differences between different chains, so we do this with our inference model.
+
+```{r ulam debug look, fig.width= 8, fig.height= 6}
+stancode(m9.1)
+precis(m9.1, depth = 2)
+traceplot_ulam(m9.1, pars = c("a[1]", "a[2]", "b[1]", "b[2]"),n_cols = 2,trim = TRUE)
+```
+
+So now lets do our inference model, because it seems that this model has been well specified and that the outputs look like they should.
+
+```{r ulam inference rugged, error = F, warning= F, results = F, mesage = F}
+
+# Our debugging model
+m9.2 <- ulam(alist(
+   log_gdp_std ~ dnorm(mu, sigma),
+   mu <- a[cid] + b[cid]*(rugged_std - 0.215),
+   a[cid] ~ dnorm(1,0.1),
+   b[cid] ~ dnorm(0,0.3), # slope term indexed for each category
+   sigma ~ dexp(1)),
+   data = rugged_list,
+   chains = 4, 
+   cores = 4
+)
+
+```
+
+And again take a look
+
+```{r ulam inf look, fig.width= 8, fig.height= 6}
+precis(m9.2, depth = 2)
+traceplot_ulam(m9.2, pars = c("a[1]", "a[2]", "b[1]", "b[2]"),n_cols = 2,trim = TRUE)
+trankplot(m9.2)
+```
+
+## How your Markov chain **shouldn't** look
+
+So, if this is a well specified model that has a sensible Markov chain output as well as sensible results, how do things look when they go wrong? Let us imagine an example of a linear regression, where the mean of our response variable $y$ is an arbitrary combination of two predictor variables ($\alpha_1$ and $\alpha_2$). We just simulate $y$ from a Gaussian distribution, and build our model to see if $\alpha_1$ or $\alpha_2$ have an effect on $y$. We are also going to make our parameters ~unidentifiable though, with very broad prior expectations. Here is our joint model:
+
+$$y_i \sim \mathcal{N}(\mu,\sigma)$$
+$$\mu = \alpha_1 + \alpha_2$$
+$$\alpha_1 \sim \mathcal{N}(0,1000)$$
+$$\alpha_2 \sim \mathcal{N}(0,1000)$$
+$$\sigma \sim {\sf Exponential}(1)$$
+Neither predictor should have an effect on $y$. Now lets simulate our data and run the model.
+
+```{r ulam arbit y, error = F, warning= F, results = F, mesage = F}
+
+set.seed(41)
+y <- rnorm(100, mean = 0, sd = 1)
+
+# Our model
+set.seed(384)
+m9.3 <- ulam(alist(
+   y ~ dnorm(mu, sigma),
+   mu <- a1 + a2,
+   a1 ~ dnorm(0,1000),
+   a2 ~ dnorm(0,1000), 
+   sigma ~ dexp(1)),
+   data = list(y = y),
+   chains = 3 # just an example here
+)
+
+```
+
+If we now look at the summary table of this model, it definitely seems like something fishy is going on. Where have these effects of our $\alpha$s come from? Also, look at our effective number of samples and Rhat, very few samples and poor convergence.
+
+```{r ulam arbit y summary}
+precis(m9.3)
+```
+
+And finally, lets look at our trace and trank plots of this Markov chain and posterior samples.
+
+```{r ulam arbit y plots, fig.width= 8, fig.height= 4}
+traceplot_ulam(m9.3,n_cols = 3)
+trankplot(m9.3,n_cols = 3)
+```
+
+### **Do not do this. Regularising your priors solves these issues. Be Conservative and think about your model before specifying it!!**
+
+***
+
+# Lecture 11 - Big Entropy and the Generalised Linear Model
+
+### Conceptual introduction to GLMs
+
+You will of course recount the experience of fighting with tangled electrical cords. No matter how neatly you tidy things away you always seem to spend a lot of effort and energy to untangle them. There is real physics at work here - *entropy* - There are vastly more ways for a cord to end up in a knot that to be untied. Things that can happen more ways are more likely (in the same way as our Bayesian posterior). So, there is an entropic potential for your cords to get tangled up. The theory of entropy can really help us to think about distributions and statistics.
+
+Think also that you have 5 buckets, and you have a pile of 100 pebbles at your feet, each painted with a number. Unique pebbles. What happens when we toss the pebbles one at a time randomly into one of the buckets. Eventually all pebbles end up in the buckets. The distribution of how many pebbles are in each bucket can tell us a lot. In an extreme case for example, there is only one way for all 100 pebbles to be in bucket 1 i.e. for all pebbles to be in bucket 1. No other arrangement works. Same for other buckets. Where pebbles are distributed more evenly across the buckets, there are many many many configurations of pebble numbers that can result in this more even distribution. Some distributions can arise in many more ways than others. This is inherent in Bayesian inference.
+
+To calculate the number of ways $W$ that the pebbles (total number $N$) can occur in each distribution across each of our $k$ buckets ($n_1$ - $n_k$, the number of pebbles in each of our buckets), we use **factorials** and **multiplicity**:
+
+$$W = \frac{N!}{n_1!n_2!n_3!...n_k!}$$
+This is at the foundation of all statistics. The number of ways goes up massively when our $n$s become more equal.
+
+Imagine with ten pebbles and you want all of them in bucket 3. There is only one way to do this i.e. $W = \frac{10!}{10!} = 1$ because none of the other buckets are used. No imagine we want 8 in bucket 3, and 1 in both bucket 2 and bucket 4. Here we have $W = \frac{10!}{1!8!1!} = 90$. Lots of ways and we have only moved two pebbles. Now we imagine a uniform distribution across our 5 buckets $W = \frac{10!}{2!2!2!2!2!} = 113400$. These numbers jump up very very fast. 
+
+**Flat distributions have high entropy** - can be realised in a high number of ways, and less surprised by new information (remember the Mars example)
+
+The information entropy formula is derived from this multiplicity. Where, for a large $N$:
+
+$$\frac{1}{N}\log W \approx -\displaystyle\sum_{i}\frac{n_i}{N}\log(\frac{n_i}{N})$$
+This is like a per-pebble magnitude of ways ($\frac{1}{N}$ for the $W$ term). Normalised across pebbles. And this is approximately, summed over each of our buckets, the number of pebbles in that bucket over the total, multiplied by the log of the number of pebbles in that bucket over the total. This formula looks eerily familiar:
+
+$$H(p) = - Elog(p_i) = \displaystyle\sum_{i=1}^{n}p_ilog(p_i)$$
+It *is* our information entropy formula from  chapter 7. So information entropy is just the **logged number of ways to realise a distribution**. Maximised when our distribution is flat.
+
+The maxent principle from Edwin T. Jaynes is
+
+> *The distribution with the largest entropy is the the distribution most consistent with stated assumptions that occurs in the largest number of ways*
+
+In our models,
+
+> We want the flattest distribution possible, given the constraints we impose from our real world data.
+
+This helps to understand:
+
+1. Parameters, picking good prior distributions that maximise entropy.
+2. Observations, A way to understand likelihood and information entropy.
+3. Posterior, maximising the information entropy - highest entropy answer.
+
+This is all statistics is, we're just betting on the thing that can happen in the most ways.
+
+If we think of the blue and white marbles from the garden of forking data. We just counted up the number of ways a particular combination could happen, given our assumptions, and the likelihood was based on this. This is all we were doing - maximising the entropy.
+
+#### Sometimes (most of the time) constraints in nature stop us us from having a totally flat distribution.
+
+What might these constraints be? What are the properties of the data?
+
+* A real value within an interval - Uniform
+* Real value, but a finite variance - Gaussian
+* Binary events with a fixed probability - Binomial
+* Non-negative real number with a mean - Exponential
+
+This finite variance for the Gaussian distribution is a very very common constraint in data. Even if you don't know what that variance is yet, in our original football field example (Chapter 4) with people flipping coins, we expect that for every person getting extremely biased coin flips, there are many more that are getting other results, thus we expect that the variance in outcomes (left or right) is finite, so the maximum entropy distribution is the Gaussian.
+
+For the binomial, return to the garden of forking data example. We have a bag with an unknown proportion of blue marbles. Our outcome can either be blue or white, and we expect (because no one is putting new marbles in the bag), that whatever this probability is - it is fixed. And in this case, the maximum entropy distribution is the binomial distribution. Richard walks through an example of this in the book, comparing different distributions of how two marbles could be in the bag.
+
+## Generalised Linear Models
+
+Larger family of geocentric regression models of which the Gaussian model is part of. Gaussian model is a special case.
+
+Our goal is to connect a linear model to our outcome variable. Our strategy is as follows:
+
+1. Pick an outcome distribution (maximum entropy)
+2. Model its parameters using *links* to a linear model
+3. Compute posterior
+
+Can model multivariate relationships as before and also non-linear responses. These are also the building blocks of mixed-effects models.
+
+How do we pick an outcome distribution? Most of the ones we want are exponential family. Under many natural processes, exponential family distributions are the maximum entropy distributions given their constraints (described above). Resist histomancy (staring at histograms). Use knowledge of your constraints instead and principles.
+
+### Exponential
+
+Core member is the exponential. Curved shape with a single parameter $\lambda$, which is the rate of change. Proportional rate of change across its whole shape. Mean of the distribution is $\frac {1}{\lambda}$:
+
+$$y \sim {\sf Exponential}(\lambda)$$
+It arises naturally from an entity (body, cell, machine etc.) where if one part stops working, the machine breaks. This is generally often describing decay.
+
+### Binomial
+
+When we count events that arise from this initial exponential, then we arrive at a binomial observation. Here we have a number of trials, $n$, with a fixed probability $p$:
+
+$$y \sim {\sf Binomial}(n,p)$$
+
+### Poisson
+
+Either starting with a binomial distribution, but where we have many **many trials** and a very low probability, **OR** When we have an exponential distribution but we're counting events at a much **lower rate**, we arrive at a Poisson distribution. It is also a single parameter distribution. Related to the exponential, and is seen in nature all the time.
+
+$$y \sim {\sf Poisson}(\lambda)$$
+
+### Gamma
+
+So in our exponential example, imagine that we're interested in the length of time that it takes for the machine to break, or the number of parts needed to break the machine. The **sum**. These weighting times, or distances, will follow a Gamma distribution. Things like, age at onset of cancer are Gamma distributed, lots of cellular defence mechanisms that have to be breached.
+
+$$y \sim {\sf Gamma}(\lambda,k)$$
+
+### Gaussian
+
+If you have a Gamma distribution with a really large mean, then the distribution tends towards a Gaussian, or normal distribution. Very very common in nature.
+
+$$y \sim {\sf Normal}(\mu,\sigma)$$
+This is to show that all of these distributions are related to the **exponential** and they are all inter-related with each other. Also, the differences between them are to do with their **underlying assumptions**, not intrinsically their shape.
+
+## Link functions
+
+So now we want to model the parameters of our distribution that we have selected with respect to our predictor variables. In Gaussian models, the units of the outcome variable $y$, and it's mean $\mu$ are on the same scale. This is not true for other GLM models. For example, our parameter $p$ in a binomial regression is a probability, without units. So we have a **link**. But your outcome is a count with units. We need something that connects our parameter to our outcome. We want to do this using our same linear model framework, but with a connection between our distributions form and the linear model. The general form of our **generalised linear model** will be as follows:
+
+$$y_i \sim {\sf Distribution}(parm_i)$$
+$$f(parm_i) = \alpha + \beta x_i$$
+Where for some distribution with parameter $parm$, we generate a linear model based on a **link function**, $f()$ of that parameter, which constrains it to the right shape. The linear model itself is then presented in the usual way.
+
+As an example from a binomial process that we are investigating, our GLM would look like this:
+
+$$y_i \sim {\sf Binomial}(n, p_i)$$
+$$f(p_i) = \alpha + \beta x_i$$
+The link function that we use depends on the model distribution that we have chosen. Most commonly this link function will either be a **log link** or a **logit link**. In the case of the binomial distribution, we link our parameter to our linear model with a **logit link**
+
+$${\sf logit}(p_i) = \alpha + \beta x_i $$
+This logit link is often called the logistic, in which the probability of an event (constrained to between 0-1) in our binomial distribution is put on the log-odds scale in our linear model, where it can take any real value. When log-odds = 0, our probability is 0.5, log-odds = 1, p ~ 0.75. Log-odds scale can go from -Inf to +Inf too. There are other link functions available for the binomial distribution (probit or cloglog)
+
+In this lecture we now move on to Chapter 11 of the book, to apply some of these GLMs.
+
+## The Tide machine
+
+Lord kelvin, whose name is also given to the temperature scale, was also famous for creating a computing machine with lots of complicated gears that could predict the position of the tide. We can think of GLMs and their complex link functions like these tide machines. The underlying mechanics on the parameter scale, like the gears of the tide machine, are very complex and hard to interpret on their own. Instead, we work on the **prediction scale**, which is where all the useful inference is made. Have to take care with GLMs to focus on these predictions i.e. what the Golem is telling us, rather than fixating on parameters.
+
+## Everything interacts
+
+An interesting phenomenon in GLMs are floor and ceiling effects, and that all of the variables interact with each other on the outcome scale. Even if you don't model interactions and just have additive effects, there are effects on the outcome scale. Common with natural phenomena. Imagine we want to know the habitat preferences of a reptile. Cold, survival low, Hot, survival higher. On the probability scale, if it gets too cold you're just dead, so it flattens the curve out. This is an interaction though, because it doesn't matter what our other effects are, e.g. feeding the lizard, below a certain temperature survival is just very low. Same is true for very hot temperatures. This is an **interaction**. Arises from the structures of the data.
+
+Also interesting to consider the derivatives of the the $\beta$ coefficients in a linear regression vs. GLM. In a Gaussian model, the rate of change of the mean $\mu$ with respect to $x$ is our coefficient $\beta$. By definition (and can also prove this). However, in a binomial model for example, the partial derivative of the change in the probability $p$ with respect to $x$ is much much more complicated due to the formula of the probability, and also includes the full linear model still. Not just $\beta$ by itself. So because of this the parts of our linear model interact to influence our probability, which can make interpretation more tricky. Again, stick on the prediction side of things to get around this.
+
+## Binomial regression
+
+A bit more about binomial. Counts of a specific event $y$ out of $n$ possibilities/trials, with a probability $p$. Constant expected value. Maxent for this case is our Binomial distribution. Our expected value, or our mean of the outcome (or our counts of some events) $E(y) = np$, and the variance of our outcome is $var(y) = np(1-p)$. Thus, unlike our Gaussian model, **our mean and variance are not independent of one another** i.e. there is a mean-variance relationship. Gaussian is the only case where the mean and variance are independent - this is rare.
+
+# Lecture 12 - God Spiked the Integers
+
+### Implementing GLMs for count data
+
+Lots and lots of things in the world are in integer form. We count a lot of stuff. But actually it's trickier to model these integers than continuous real numbers. So god spiked them somehow (lol). Now we're going to use all of the tools we've acquired i.e. regularising priors, information criteria, MCMC estimation to implement GLMs on count data. Still working on lecture 11 at the beginning. Spans both Youtube lectures.
+
+Interesting thing about these discrete phenomena in nature is that underlying them there is never a purely discrete process. Internally they are continuous and complex interactions. Like fireflies synchronously flashing, the internal mechanism of each insect is actually continuous. Asteroid belt in the solar system is actually lots of belts together with significant gaps that occur at *integer* ratios based on the resonance of Jupiter. Jupiter's gravity acting on the asteroids pushes them when they pass it, at the same time every year. This effect is strongest for asteroids passing Jupiter at regular intervals i.e. the integer ratios across the year. Very cool.
+
+> Discrete regular nature is not the result of discrete regular systems, which are continous and interactive.
+
+In this analogy imagine the GLMs that we're building one of these continuous interacting systems underneath an integer system.
+
+## Prosocial Chimpanzees
+
+In this experiment, a Chimpanzee sits at the end of a table with two levers on the table in front of it, one on the left and one on the right. There are 4 dishes of food associated with these levers. If you pull the left lever, only you get food, an empty dish goes to the end of the table (conspecific), where there isn't levers. On the right, if you pull the lever both you and your conspecific will get the food - the *prosocial option*. Also have to account for handed-ness, so swap the sides round.
+
+They might only be pulling the lever that gives them the most food (i.e. with two bowls).  But we can also remove the prosocial option. want to know if they pull the right hand lever more if there is a conspecific opposite them. *Do they act prosocially?*.
+
+* Two conditions - partner or alone
+* Two options - prosocial or asocial
+* Two outcomes - left or right
+
+Want to predict the outcome of pulling left and right depending on whether there is a conspecific and the side to pull. Different *actors*, which are the different focal chimps that have a handedness preference.
+
+Coding treatments:
+
+1. Right prosocial - No partner
+2. Left prosocial - No partner
+3. Right prosocial - Partner
+4. Left prosocial - Partner
+
+Note that because this treatment variable encodes two variables (partner presence and right or left choice), this is actually an **interaction model**, which is preferable to disentangle the handedness effect. In this case we are using $y_i \sim {\sf Binomial}(1, p_i)$, which is where the trial size is one. This is also called the **Bernoulli**.
+
+Lets load in the data and do our housekeeping.
+
+```{r prosocial chimp load, fig.width= 10, fig.height= 4}
+
+data(chimpanzees)
+
+# index varaible for the treatments - categories
+chimp <- chimpanzees %>% 
+   mutate(treatment = 1 + prosoc_left + 2*condition)
+
+# Plot the raw data
+as.data.frame(table(chimp$pulled_left, chimp$treatment)) %>% 
+   ggplot(aes(x = Var2, y = Freq, fill = Var1)) +
+   geom_col(width = 1, colour = "black") +
+   scale_x_discrete(labels = c("Right prosocial - No partner", 
+                               "Left prosocial - No partner", 
+                               "Right prosocial - Partner", 
+                               "Left prosocial - Partner"),
+                    expand = c(0,0)) +
+   scale_y_continuous(breaks = seq(0,140, by = 10), expand = c(0,0)) +
+   labs(x = "Treatment", y = "Count") +
+   scale_fill_manual(name = "Pulled left", 
+                     values = c("darkorchid", "chartreuse3"), 
+                     labels = c("No", "Yes")) +
+   theme_bw(base_size = 14)
+
+# data as a list for MCMC
+chimp_list <- list(
+   pulled_left = chimp$pulled_left,
+   actor = chimp$actor,
+   treatment = as.integer(chimp$treatment)
+)
+
+```
+
+
+Hmmm so maybe doesn't look like there is too much going on. Lets define our joint model so we can do the stats and find out!
+
+$$L_i \sim \operatorname{Binomial}(1,p_i)$$
+$$\operatorname{logit}(p_i) = \alpha_{\operatorname{ACTOR}[i]} + \beta_{\operatorname{TREATMENT}[i]}$$
+$$\alpha_j \sim \operatorname{to be determined}$$
+$$\beta_k \sim \operatorname{to be determined}$$
+Important to note/remember here that what we are actually specifying is differences in intercepts for the different actors, and differences in intercepts for our different treatments. Despite them being $\beta$ terms, this actually just notation for the differences in intercept because you are not multiplying by your predictor variable. Now we need to determine our priors.
+
+## Prior predictive simulation
+
+Priors with GLMs act a little differently because we have to act on these different scales again. PPS to the rescue again. We can do prior predictive simulation for the average log-odds. Want to pick priors for $\alpha$ and $\beta$, the intercepts of probability of left pull, and the difference in left pull between treatments, respectively. So, if we go with our standard Gaussian prior, we can pick a mean on the log-odds scale of 0, which is probability of 0.5 i.e. no expectation either way. Then we need to pick a variance on this.
+
+So, for both our $\alpha$ and $\beta$ lets try a very weakly informative and a more regularising prior, and investigate the average probability ($\alpha$) and difference between treatments ($\beta$ better to look at this because it is like our effect sizes) that we would expect for these priors. Just with quap for this.
+
+```{r prosocial chimp PPS, fig.width= 4, fig.height= 4}
+
+## alpha is m11.1 - a weak, b regularising
+m11.1a <- quap(alist(
+   pulled_left ~ dbinom(1,p),
+   logit(p) <- a,
+   a ~ dnorm(0,10)),
+   data = chimp)
+
+m11.1b <- quap(alist(
+   pulled_left ~ dbinom(1,p),
+   logit(p) <- a,
+   a ~ dnorm(0,1.5)),
+   data = chimp)
+
+# extract prior and convert to probability scale
+prior_a_weak <- extract.prior(m11.1a, n = 1e4) 
+prior_a_reg <- extract.prior(m11.1b, n = 1e4) 
+
+p_weak <- inv_logit(prior_a_weak$a)
+p_reg <- inv_logit(prior_a_reg$a)
+
+tibble(p_weak, p_reg, n = 1:length(p_reg)) %>% 
+   pivot_longer(-n) %>% 
+   ggplot(aes(x = value, fill = name)) +
+   geom_density(alpha = 0.5) +
+   labs(x = "Prior probability of pulling left", y = "Probability density") +
+   scale_fill_manual(name = "prior", labels = c("dnorm(0,1.5)", "dnorm(0,10)"),
+                     values = c("cornflowerblue", "firebrick")) +
+   theme_bw(base_size = 12) +
+   theme(panel.grid = element_blank())
+
+## beta is m11.2 - a weak, b regularising
+m11.2a <- quap(alist(
+   pulled_left ~ dbinom(1,p),
+   logit(p) <- a + b[treatment],
+   a ~ dnorm(0,1.5),
+   b[treatment] ~ dnorm(0,10)),
+   data = chimp)
+
+m11.2b <- quap(alist(
+   pulled_left ~ dbinom(1,p),
+   logit(p) <- a + b[treatment],
+   a ~ dnorm(0,1.5),
+   b[treatment] ~ dnorm(0,0.5)),
+   data = chimp)
+
+# extract prior and convert to probability difference between 2 of the treatments
+prior_b_weak <- extract.prior(m11.2a, n = 1e4) 
+prior_b_reg <- extract.prior(m11.2b, n = 1e4) 
+
+p_weak <- sapply(1:4, function(k) inv_logit(prior_b_weak$a + prior_b_weak$b[,k]))
+p_reg <- sapply(1:4, function(k) inv_logit(prior_b_reg$a + prior_b_reg$b[,k]))
+
+tibble(p_weak = abs(p_weak[,1] - p_weak[,2]), 
+       p_reg = abs(p_reg[,1] - p_reg[,2]), n = 1:1e4) %>% 
+   pivot_longer(-n) %>% 
+   ggplot(aes(x = value, fill = name)) +
+   geom_density(alpha = 0.5) +
+   labs(x = "Prior probability difference\nbetween treatment 1 and 2", 
+        y = "Probability density") +
+   scale_fill_manual(name = "prior", labels = c("dnorm(0,0.5)", "dnorm(0,10)"),
+                     values = c("cornflowerblue", "firebrick")) +
+   theme_bw(base_size = 12) +
+   theme(panel.grid = element_blank())
+
+```
+
+We get these very odd prior probability density distributions with a weak prior, because the vast vast majority of our probability density on the log-odds scale is >3 and <-3 (can go to infinity), above which point the probability is 1 or 0, respectively. So, for a weak prior ~all the mass is at the extremes of the distribution. For our differences, biggest difference possible is 1, but this is very very unlikely (can't assume treatments are exactly 100% different in this case, more likely that difference is closer to 0). These strange distributions are all to do with the scale differences between our log-odds scale and our probability. Regularising therefore becomes **even more important** for GLMs.
+
+## Our inference model
+
+So, now we aren't going to follow Richards own advice for the purposes of teaching, and jump straight in with our inference model (would normally do a run on a single chain to check convergence etc.). Let's do our four chain model straight away. We are controlling for handedness in our inference model, by fitting a difference left-pull intercept for each of our actors (chimps). Handedness adds noise if we don't account for it, not technically a confound but affects our measurement error etc. so we get a more precise estimate. Back-door criterion and causal inference isn't as relevant here because its a controlled experiment - we've controlled where partners and food are.
+
+
+```{r Stan chimp, error = F, warning= F, results = F, mesage = F}
+m11.4 <- ulam(alist(
+   pulled_left ~ dbinom(1,p),
+   logit(p) <- a[actor] + b[treatment],
+   a[actor] ~ dnorm(0,1.5),
+   b[treatment] ~ dnorm(0,0.5)),
+   data = chimp_list,
+   chains = 4, 
+   cores = 4,
+   log_lik = TRUE) # Important for model comparisons
+
+```
+
+And now lets have a look at the output of the model. Here we look at the coefficient table, the Markov chain traces.
+
+```{r stan chimp res, fig.width= 10, fig.height= 5}
+
+precis(m11.4, depth = 2)
+traceplot(m11.4, pars = c("a[1]", "b[1]", "b[2]"))
+```
+
+All looks well specified. It seems that we have different probabilities of pulling the left leaver across our different actors (focal chimps). From the beta coefficients for the different treatments, it looks like there aren't substantial differences in the probability of pulling the prosocial choice when there is a partner there vs when there isn't.
+
+To get a more detailed sense of these effects, let us actually plot out the posterior distributions. We will also plot out the treatment contrasts. This is difference in log-odds of pulling the left leaver when there is vs. isn't a partner present. We're comparing treatment 1 to 3, and 2 to 4. Here for the first time we will use ``ggridges`` (not in the lectures), which is a nice way to visualise posterior distributions.
+
+```{r stan chimp ridges, fig.width= 8, fig.height= 4}
+chimp_post <- extract.samples(m11.4)
+
+## Actor intercept differences
+as.data.frame(inv_logit(chimp_post$a)) %>% 
+   mutate(sim = 1:n()) %>% 
+   pivot_longer(-sim, names_to = "chimp", values_to = "post", names_prefix = "V") %>% 
+   ggplot(aes(x = post, y = chimp, fill = stat(x))) +
+   geom_density_ridges_gradient(scale = 1.6, show.legend = F, rel_min_height = 0.01) +
+   scale_fill_gradient(low = "darkorchid", high = "chartreuse3") +
+   lims(x = c(0,1)) +
+   labs(x = "Posterior probability of left pull", y = "Chimp") +
+   theme_ridges(center_axis_labels = TRUE, font_size = 20)
+
+## Treatment effects - on the logit scale
+treatments <- c("Right prosocial - No partner", 
+                               "Left prosocial - No partner", 
+                               "Right prosocial - Partner", 
+                               "Left prosocial - Partner")
+as.data.frame(chimp_post$b) %>% 
+   mutate(sim = 1:n()) %>% 
+   rename_at(vars(paste0("V", 1:4)), ~ treatments) %>% 
+   pivot_longer(-sim, names_to = "treatment", values_to = "post") %>% 
+   ggplot(aes(x = post, y = treatment, fill = stat(x))) +
+   geom_vline(xintercept = 0) +
+   geom_density_ridges_gradient(scale = 1.2, show.legend = F, rel_min_height = 0.01) +
+   scale_fill_gradient(low = "darkorchid", high = "chartreuse3") +
+   scale_x_continuous(breaks = seq(-2,2, by = 0.5)) +
+   labs(x = "Log-odds of left pull", y = NULL) +
+   theme_ridges(center_axis_labels = TRUE, font_size = 17)
+
+## Treatment contrasts - difference in log-odds - just a precis plot
+diffs <- list(Right_prosocial = chimp_post$b[,1] - chimp_post$b[,3],
+              Left_prosocial = chimp_post$b[,2] - chimp_post$b[,4])
+
+plot(precis(diffs), xlab = "Difference in log-odds")
+
+```
+Remember the tide machine. Have to look at the predictions from posterior to really see the implications of our GLM. It really doesn't seem like there is a strong effect of the partner being present on the probability of pulling the prosocial choice. This can be seen reasonably easily from the posteriors themselves. However, we get additional info from our treatment contrasts. We would have positive differences for the right prosocial choice if they were opting for the prosocial choice, and negative differences for the left prosocial choice. Neither have strong support here. 
+
+In both cases though, can be hard to see these differences. So lets go to the outcome scale and have a look at that. Here you have the posterior mean probability predictions for each actor in each treatment. The prosocial choice is given by the shape. 
+
+```{r chimp outcome scale, fig.width= 11, fig.height = 4}
+
+# do predictions for all actors and treatments
+pred_dat <- expand.grid(actor = 1:7, treatment = 1:4)
+
+pred <- link(m11.4,data = pred_dat)
+p_mu <- apply(pred, 2, mean)
+p_ci <- apply(pred, 2, PI)
+
+pred_dat %>% 
+   mutate(mu = p_mu, lwr = p_ci[1,], upr = p_ci[2,],
+          chimp = paste0("Chimp ", actor),
+          prosocial = if_else(treatment %in% c(1,3) == TRUE, "right", "left"),
+          partner = if_else(treatment %in% 1:2 == TRUE, "absent", "present")) %>% 
+   ggplot(aes(x = partner, y = mu, group = interaction(chimp, prosocial), shape = prosocial, colour = factor(chimp))) +
+   geom_hline(yintercept = 0.5, linetype = "dashed") +
+   geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.05, show.legend = F) +
+   geom_point(size = 4) + geom_line(show.legend = F) +
+   guides(colour = "none", shape = guide_legend("Prosocial\nchoice")) +
+   labs(x = "Partner", y = "Mean posterior probability") +
+   facet_grid(~chimp) +
+   theme_bw(base_size = 13) +
+   theme(panel.grid = element_blank())
+
+   
+
+```
+
+You can see that when the partner is present, if anything the probability of pulling left actually decreases on average. But overall no real effect. We can compare models too with our LOO or PSIS or WAIC as before, just remember `log_lik = TRUE`, which adds computation the log-probability of each sample as we calculated by hand before. This is very very big in a big dataset though, so use it sparingly.
+
+## Relative vs. Absolute effects
+
+* Parameters on *relative* effect scale.
+* Predictions on the *absolute* effect scale.
+* Proportional odds (odds ratio) is the *relative effect measure*.
+
+Have to be careful with these relative effects and absolute effects. Relative sharks and Absolute penguin. People shared of sharks - but sharks kill very few people. But there is an exposure effect. Deer are less dangerous, but because we have higher exposure to them, the absolute effect is higher. So, for the shark we need to know the relative effect, conditional on being in the water, like a penguin would be. For a penguin, the absolute effect of getting attacked by a shark is higher. 
+
+Lots of things reporting relative effects in the news, i.e. like rare diseases and their risk factors. Headline could be 'eating meat causes the risk of this disease to double". However, the absolute effect is still very very small, even though it doubled relatively. But also, the relative effects can be important as we need it for causal inference to compare to some baseline state. Communicating risk is very tricky and often inflamed on the news.
+
+*Use both, but be careful.*
+
+## Aggregated binomial -Gender bias in graduate school admissions
+
+Thus far, our data have been organised with a single trial per row. But in principle, so long as we don't care about the order of left pull trials undertaken by the chimpanzees, the information for each actor in each treatment could be stored in a single row with multiple trials in the **aggregated binomial**. Compact way of displaying the data. The *posterior distribution is exactly the same in this case*, although the number of observations changes i.e. the number of ways that the data is separable. Mathematically they are the same. People don't distinguish them often though, which can affect our prediction. This a affects the calculation of log point-wise probability density for use in cross validation, PSIS and WAIC however, because there are less way for the data to be arranged, and so fewer possibilities. But generally these two types of models can't be compared to one another like this, just have to go with one and stick to it for your study.
+
+Lets implement an aggregated binomial looking at **gender bias** in graduate admissions at UC Berkley. We have the data for the number of applications from different departments, and the split of admissions based on gender.
+
+```{r UCB gender data, fig.width=11, fig.height= 5}
+data(UCBadmit)
+UCBadmit
+
+## Plots to show the raw data
+a <- UCBadmit %>% 
+   group_by(applicant.gender) %>% 
+   summarise(admit = sum(admit), applications= sum(applications)) %>% 
+   ggplot(aes(x= applicant.gender, y = applications)) +
+   geom_col(aes(fill = "total")) +
+   geom_col(aes(y = admit, fill = "successful")) +
+   scale_fill_manual(name = "",values = c("chartreuse", "chartreuse4")) +
+   labs(x = "Applicant gender", y =  "Number of applications") +
+   theme_bw(base_size = 14)
+
+b <- UCBadmit %>% 
+   mutate(adprob = admit/applications) %>% 
+   ggplot(aes(x = applicant.gender, y = adprob, colour = dept, group = dept)) +
+   geom_line(show.legend = F) + geom_point(aes(size = applications)) + 
+   scale_size_binned(name = "Applications", range = c(1,13)) +
+   guides(color = guide_legend("Department")) +
+   ylim(0,1) +
+   labs(x = "Applicant gender", y =  "Admission probability") +
+   theme_bw(base_size = 14)
+   
+grid.arrange(a,b, ncol = 2)
+```
+
+It's relatively clear from the data in the first plot that the proportion of successful applications for females is lower than for males, and there is a much lower (almost a third) number of applications in total.
+
+However, there is a confound in here, which is the department. If we look at the admission probability based on gender for across all the departments, it varies a lot, and actually looks to be the reverse in most departments. Again, the numbers of applicants is also key to this. It seems that while overall females had a harder time gaining admission to the UC Berkley, they also applied to departments that had the lowest rates of acceptance, for any gender.
+
+Thinking about this from a **DAG** perspective once again, we're trying to assess the causal inference of gender on admission probability. However, there is a backdoor path of department, gender also influences department choice. So, we need to condition on department to ascertain the causal effect of gender on admission probability.
+
+If we just ask the question - *Overall did female applicants have a lower probability of acceptance?* - Then yes. Female applicants were accepted at a lower rate. You can see this in a gender-only intercept difference model in the book, looking at different between males and females only. Our Golems are mean oracles and answer only very specific questions.
+
+However, actually we want to add in additional adjustments, that investigate whether there are differences in admission probability (intercept differences once again) based on the department. These department admission rate differences are specified with $\delta$ terms. In this aggregated model, our number of successful admissions $\operatorname{success}$ for each data point $i$, is a function of the number of trials (`applications` column), $N$ and our probability across our genders $j$ and departments $k$:
+
+$$\operatorname{success}_i \sim \operatorname{Binomial}(N_i,p_i)$$
+$$\operatorname{logit}(p_i) = \alpha_{\operatorname{gender}[i]} + \delta_{\operatorname{department}[i]}$$
+$$\alpha_j \sim \operatorname{Normal}(0,1.5)$$
+$$\delta_k \sim \operatorname{Normal}(0,1.5)$$
+
+**We wont actually fit the model here to save on computation**, but when you account for differences in intercept between the different departments, the overall gender effect is much reduced and no-longer a substantial effect. If anything in fact it switches around. The causal paths and backdoors explain this phenomenon, which is called **Simpson's paradox**. Here you can see that the different departments have quite different admission rates. We can see these differences on both the log-odds scale (relative - shark) and probability scale (absolute - penguin). Females are applying to more selective departments - so overall they are lower. But within a department it doesn't effect it. System is discriminatory but the application reviewers maybe not be (although probably could be).
+
+So, it seems that department is a confound that gives indication about the true causal effect, acting as a mediator. This helps with the conclusion that yes there are gender biases in admission rates at Berkeley, but this is *mediated* by the department at the university.
+
+## Poisson regression
+
+So far we have been working on counts that have an upper limit i.e. the total number of trials on our chimps or the total number of applications.
+
+In Poisson GLMs, we work on counts **without an upper limit**, with a constant expected value. Also for things that occur much more rarely.
+
+$$y \sim \operatorname{Poisson}(\lambda)$$
+We have a single parameter $\lambda$, which is the events per unit time. The expected value of $y$ is the same as the variance i.e. the **variance is equal to the mean**. 
+
+$$\operatorname{E}(y) = \lambda$$
+$$\operatorname{var}(y) = \lambda$$
+Examples: soccer goals, fission events, photons striking, mutations, soldiers killed by horse kicks (classic example).
+
+## Oceaning tool complexity
+
+Now we are going to look at a dataset of stone age tool complexity in human island states in the Pacific ocean. We want to know *Whether the complexity of the toolkit is proportional to the magnitude of the population*, and *Whether contact with other islands mediates the effect of tool use*. Islands here are a set of natural experiments for looking at cultural evolution.
+
+First, and always for me, the data and a basic plot:
+
+```{r Kline data, fig.width= 6,fig.height = 5}
+data(Kline)
+
+Kline <- Kline %>% 
+   mutate(pop_std = as.numeric(scale(log(population))),
+          cont = if_else(contact == "low",1,2))
+
+ggplot(Kline,aes(x = pop_std, y = total_tools, colour = contact, shape = contact)) +
+   geom_point(size = 4) +
+   geom_text(aes(label = culture, colour = NULL),
+             nudge_y = 2.3, nudge_x = 0.08, show.legend = F) +
+   scale_colour_manual(name = "Contact", values = c("firebrick", "cornflowerblue")) +
+   guides(shape = guide_legend("Contact")) +
+   labs(x = "Standardised population size", y = "Total number of tools") +
+   theme_bw(base_size = 14) + theme(panel.grid = element_blank())
+
+```
+
+
+What does our full model look like without priors defined:
+
+$$\operatorname{tools}_i \sim \operatorname{Poisson}(\lambda_i)$$
+$$\log \lambda_i = \alpha_{\operatorname{contact[i]}} + \beta_{\operatorname{contact[i]}}P_i$$
+Where $P$ is our standardised log-transformed population size. Our *link* function here is the log. So we get this characteristic exponential shape in our posterior predictions. We want to map linear model to only positive real numbers from our counts. Log maps all negative numbers to 0-1, all positive numbers map 1-infinity. Log is great for this. Big big expansion though so careful with those priors.
+
+For our **prior predictive simulation**, we are just going to test out the implications of normally distributed priors for our outcome space when we use these priors. If you do not regularise your priors in GLMs they produce some really wacky results. But fortunately, this is actually very simple (working with log normals):
+
+```{r pps Kline, fig.width = 8, fig.height = 3}
+
+par(mfrow = c(1,2))
+curve(dlnorm(x,0,10), from = 0, to = 100, n = 200, 
+      ylab = "Density", xlab = "Mean number of tools", main = "dnorm(0,10)")
+curve(dlnorm(x,3,0.5), from = 0, to = 100, n = 200, 
+      ylab = "Density", xlab = "Mean number of tools", main = "dnorm(3,0.5)")
+
+```
+
+The mean of our log-normal distributions are $\exp (\mu + \sigma^2/2)$, which in the first case is $\exp(50)$, which is very very large indeed. Just our simple regularisation reduces this mean to 20 tools.
+
+We can look at this for our slope term too with another simple simulation.
+
+```{r pps beta Kline, fig.width = 8, fig.height = 3}
+N <- 100
+a <- rnorm(N,3,0.5)
+b <- rnorm(N,0,10)
+par(mfrow = c(1,2))
+plot(NULL, xlim = c(-2,2), ylim = c(0,100),
+                    xlab = "Std log population", ylab = "Total tools")
+for(i in 1:N){curve(exp(a[i] + b[i]*x), add = TRUE, col = grau())}
+b <- rnorm(N,0.2)
+plot(NULL, xlim = c(-2,2), ylim = c(0,100),
+                    xlab = "Std log population", ylab = "Total tools")
+for(i in 1:N){curve(exp(a[i] + b[i]*x), add = TRUE, col = grau())}
+```
+Again, regularising puts the effects of population on total tools on a much more sensible scale. If we have a flat prior, we expect explosions of tool use.
+
+A note here, when you convert these slope effects to the log scale (un-standardised), the effects increase in magnitude. The majority of our curves stay within the outcome space but in some cases explosions in tool use are predicted. If we then convert to the raw population scale i.e. un-logging a logged term in a log-linear model, then we get a diminishing returns scenario, where after a particular population size the gains in tool use don't increase any more. This is expected if you have **standardised log terms** in a poisson model.
+
+## Poisson `ulam`
+
+Now for our posterior estimations in Stan. We are going to investigate the two hypotheses in this study by building two competitive and plausible models. One with an interaction only term for the contact to other islands, and one with an interaction with the log-transformed population size. Remember again that when you are exploring *your own* models, to do an initial MCMC run with a single chain.
+
+```{r Kline ulam, error = F, warning= F, results = F, mesage = F}
+# data list
+kline_list <- list(
+   tools = Kline$total_tools,
+   contact = Kline$cont,
+   P = Kline$pop_std
+)
+
+# universal intercept only
+m11.9 <- ulam(alist(tools ~ dpois(lambda),
+                    log(lambda) <- a,
+                    a ~ dnorm(3,0.5)),
+              data = kline_list,
+              chains = 4, 
+              log_lik = TRUE)
+
+# contact to islands intercept
+m11.9a <- ulam(alist(tools ~ dpois(lambda),
+                    log(lambda) <- a[contact],
+                    a[contact] ~ dnorm(3,0.5)),
+              data = kline_list,
+              chains = 4, 
+              log_lik = TRUE)
+
+m11.10 <- ulam(alist(tools ~ dpois(lambda),
+                    log(lambda) <- a[contact] + b[contact]*P,
+                    a[contact] ~ dnorm(3,0.5),
+                    b[contact] ~ dnorm(0,0.2)),
+              data = kline_list,
+              chains = 4, 
+              log_lik = TRUE)
+
+
+```
+
+Now lets dip in to our tool sack and compare these competing models.
+
+```{r Kline modcomp}
+precis(m11.10, depth = 2)
+compare(m11.9, m11.9a, m11.10, func = PSIS)
+```
+We have some very very influential points. This is Hawaii. Also note that the effective number of parameters, pPSIS, which is a good estimate of the overfitting risk is actually lower for our model with more parameters. This is possible and often likely in GLMs where you have these ceiling and floor effects.
+
+More next lecture.
+
+# Lecture 13 - Monsters and Mixtures
+
+### Advanced GLMs - Mixtures
+
+Jumping straight in back to the island example, we got some warnings in model comparisons using PSIS about the Pareto K values being high (really high if >1). If we look at the pointwise Pareto K values along with our posterior predictions we can see this 'leaverage' for each of our populations.
+
+```{r kline posterior pred, fig.width= 11, fig.height= 5}
+
+# pulling out the posterior predictions
+newdat <- expand_grid(P = seq(-5,3, length.out = 100), contact = c(1,2)) %>% 
+   mutate(population = exp(P*1.53 + 9)) # convert back to rawscale with sd and mean of log population
+lmda <- link(m11.10,data = newdat) # lambda predictions with link
+
+kline_pp <- newdat %>% 
+   mutate(post = colMeans(lmda), lwr = apply(lmda, 2, PI)[1,],
+          upr = apply(lmda, 2, PI)[2,],
+          contact = if_else(contact == 2, "high", "low"))
+
+# Pareto k values for each point
+kline_k <- PSIS(m11.10, pointwise = TRUE)$k
+Kline <- mutate(Kline, k = round(kline_k, 2))
+
+# Plots - one on standardised scale, one on raw scale
+pl_k_std <- Kline %>% 
+   ggplot(aes(x = pop_std, y = total_tools, colour = contact)) +
+   geom_smooth(stat = "identity", data = kline_pp,
+               aes(x = P, y = post, ymin = lwr, ymax = upr, 
+                   colour = contact, fill = contact), 
+               alpha = 0.4, show.legend = F) +
+   geom_point(size = 4) +
+   geom_text(data = filter(Kline, k > 0.5), aes(label = k, colour = NULL),
+             nudge_y = 8, nudge_x = 0.08, show.legend = F) +
+   coord_cartesian(xlim = c(-2,3)) +
+   scale_colour_manual(name = "Contact", values = c("firebrick", "cornflowerblue"),
+                       aesthetics = c("colour", "fill")) +
+   labs(x = "Standardised population size", y = "Total number of tools") +
+   theme_bw(base_size = 14) + theme(panel.grid = element_blank())
+
+pl_k <- Kline %>% 
+   ggplot(aes(x = population, y = total_tools, colour = contact)) +
+   geom_smooth(stat = "identity", data = kline_pp,
+               aes(x = population, y = post, ymin = lwr, ymax = upr, 
+                   colour = contact, fill = contact), 
+               alpha = 0.4, show.legend = F) +
+   geom_point(size = 4) +
+   geom_text(data = filter(Kline, k > 0.5), aes(label = k, colour = NULL),
+             nudge_y = 8, nudge_x = 0.08, show.legend = F) +
+   coord_cartesian(xlim = c(0,3e5)) +
+   scale_colour_manual(name = "Contact", values = c("firebrick", "cornflowerblue"),
+                       aesthetics = c("colour", "fill")) +
+   labs(x = "Population size", y = "Total number of tools") +
+   theme_bw(base_size = 14) + theme(panel.grid = element_blank())
+
+grid.arrange(pl_k_std, pl_k, ncol = 2)
+
+```
+You can see how much Hawaii sways the results. Huge parts of our population space doesn't have any data, so the guesses and intervals at this part (also standard for Poisson) are really huge. It does look however on the absolute scale and at low population sizes, that the tool use is related to contact.
+
+## Moving to a better model
+
+However, something to note is that the posterior means cross at high population sizes. From a scientific perspective this doesn't make sense. Surely for a population the size of Hawaii that had high contact, we'd expect the same if not more tool use, as with lower population sizes. We can **constrain** the model so that this doesn't happen, but we need *scientific and contextual* knowledge. Firstly, the model doesn't pass through the origin - we can be fairly sure that if there is a population of 0, there are 0 tools. And this crossing at high population sizes doesn't make sense. 
+
+Lets use a simple dynamical system model for this instead, where the change in tool-use innovation, $\Delta T$ is given by
+
+$$\Delta T = \alpha P^\beta - \gamma T$$
+where $\alpha$ is the innovation rate, $P$ is our population, where our innovation multiplied by the population tells us about tools. Then, $\beta$ is some diminishing returns exponent on the population size i.e. for each new person added, the innovation diminishes to an equilibrium, a saturation effect (more people, they get lazy because just a few will invent). Finally, we lose stuff as things are forgotten, which is captured with a loss rate $\gamma$, which interacts with the number of tools you have.
+
+This model implies a timeseries, but we don't have that. So we imply a steady state of this. At an equilibrium, the number of tools $\hat T$, where $\Delta T = 0$ is
+
+$$\hat T = \frac{\alpha P^\beta}{\gamma}$$
+Then, we can just shove this into our Bayesian Poisson model, *without a link function*, which is quite an *ad hoc* thing to assume of our data in real systems where we might have a model. This is the great thing about our Markov chains and modelling in this way. We can have any model or system we want. We just have to assume that all our parameters are positive, which achieved by assuming they are exponential.
+
+> As a gold standard we should have real theory models that we use in statistics.
+
+However, GLMs are still very useful.
+
+## Poisson exposures - Negative Binomial/Gamma-Poisson
+
+Our outcome of the possion model is out $\lambda$, which is the events per unit time/distance. What if time/distance varies across cases i.e. fishing intensity affects fish counts. very very common in your field sir. So the *exposure* between cases is different, and we can account for this with an **offset**. The expected count we get for each case is divided by our exposure. So, for our Possion linear model we would have
+
+$$y_i \sim \operatorname{Poisson}(\lambda_i)$$
+$$\lambda_i = \log \frac{\mu_i}{\tau_i} = \alpha + \beta x_i$$
+Where $\mu$ is our expected count, or our mean, and $\tau$ is our exposure rate. This would then adjust the linear model to
+
+$$y_i \sim \operatorname{Poisson}(\mu_i)$$
+$$\mu_i = \log \tau_i + \alpha + \beta x_i$$
+So we just have the log of the exposure rate, or the rate of fishing etc. This kind of model is no more difficult to fit, but called a **negative binomial** or a **gamma-poisson**
+
+### Additional count models
+
+With things like this varying rates model, and other extensions, there are other count models that are explored in the chapter:
+
+* Multinomial categorical - Extrapolation of the binomial regression to model than one unordered outcome
+* Geometric - Number of trials until a specific event
+
+Then there are mixture models, which cope with the heterogeneity in our cases as with the exposures:
+
+* Beta-binomial: varying probabilities
+* Gamma-Poisson aka. negative Binomial - varying rates
+* Dirichlet-multinomial and other mixtures
+
+These mixtures behave very similarly to multi-level models, which we are going to explore in much more detail. 
+
+## Survival analysis
+
+Instead, lets introduce separate example of survival. Count models are fundamentally about rates. Survival is similar because discrete events are happening. Rates of coin toss heads, of death etc. However we can also model the **time-to-event** for some discrete event. Here, we have *censoring*, both on the left when we don't know when time started, or right when we don't know when it ends. Have to count stuff that isn't counted, can't ignore the censoring. So we use this waiting time.
+
+So, we are going to explore this type of model with Cat adoptions in Austin, TX. We have 20-thousand cats, with time-to-event data. The event is either that they were adopted (1) or something else happened (2) like death, escape, or censoring. We have lots of other information on the cats too incl. information on their appearance etc. Richard thinks that people are bigoted against **black cats**. *Does being a black cat reduce your chances of adoption?* But we have other events too. Want the probability of waiting that long and not being adopted for this censored data.
+
+Simplest example of a distribution for a survival analysis is the exponential distribution, with a constant rate of decay captured with $\lambda$. From this we get the probability that a cat is adopted on a given day using the exponential. This is only for cats with a known fate though. What about for censored cats?? We now need the **cumulative** distribution - the probability that the event **hasn't** happened yet on or up to our time of censoring. We use the **Complementary Cumulative Distribution Function - CCDF**. So we are estimating the posterior distribution in two different ways, depending on our censoring (or not). We do this with a **mixture**.
+
+So we would have a code that looks like this to specify this
+
+```
+mod <- ulam(alist(days_to_event|adopted==1 ~ exponential(lambda),
+                  days_to_event|adopted==0 ~ custom(exponential_lcddf(!Y|lambda)),
+                  lambda <- 1.0/mu,
+                  log(mu) <- a[colour_id],
+                  a[colour_id] ~ normal(0,1)),
+            data = cats, chains = 4)
+```
+
+So, we have a *multiple choice likelihood function* which is specified in two chunks using stan code here.
+
+### Monsters and Mixtures
+
+Analogy of monsters - often in mythology monsters are bits of different organisms stuck together. Doing something extra instead of just making them big. These Golems are like the monsters, lots of bits of GLMs together. For more complex GLMs, we can have *monsters*, which are specialised, complex distributions to use in the GLM framework. *Mixtures* are blends of stochastic processes. Varying means and probabilities and rates for each case. Zero-inflation and hurdle models. 
+
+Going to focus on zero-inflation and hurdle models. Also pretty common, you have counts, but they arise from more than one process. So you get lots of zeros because of these many zeros.
+
+## Zero-inflated model - Drunk Monks
+
+Often, things we can measure are not emissions from a pure process, but instead they are *mixtures* from multiple processes. Where there are different causes for the same observation, we may need to use a **mixture model**. Count variables are especially prone to this, where we observe zeros a lot. However, our observation of a zero is either because the rate of the event is very low or because the process that generate events failed to get started. A zero can arise in more than one way. Imagine we're counting a rare bird species in a forest, and we have a zero for our count of the species, we might have recorded a zero because there were none of the species, or that we scared all of them off, or that the sampling was biased/not intensive enough, or don't know enough about the species to observe them. In any case, the data shows a zero.
+
+For our simulated example of this, we are going to investigate the example of a monastery whose monks are producing manuscripts. Each day, a large number of monks finish copying only a very small number of manuscripts. The process is binomial i.e. the rate at which they finish manuscripts, but we have large numbers of monks and a very low completion rate, so it tends towards a Poisson process. The monks also need some breaks, so on days of rest no manuscripts are completed. Also on these days, they open the cellars and the monks can have a glass of vino. As the owner of the monastery, you'd like to know how much the monks drink, but all you can observe is the number of manuscripts they complete. Our problem here is that there can be zeros on honest days when the monks don't drink as well as on days they do.
+
+So we have use a mixture model to investigate this. Explicitly we have a mixture of likelihood functions. We want to consider any zeros that can arise from when (1) the monks spent the day drinking, and (2) they worked that day but didn't finish manuscripts. Let $p$ be the probability the monks spent the day drinking, and $\lambda$ be the mean number of manuscripts completed. We want a likelihood that mixes these two processes, essentially a binomial and a poisson (in terms of link function atleast). Imagine the monks drinking is like a coin toss, where landing on a side with a vine on has probability $p$. Depending on the outcome of the flip, the monks either begin drinking $p$ or begin copying $1-p$. Drinking monks always produce zero manuscripts, working monks produce manuscripts with our average rate $\lambda$, so it is possible to observe 0 manuscripts for them. With these assumptions, the likelihood of observing a zero given $p$ and $\lambda$ is:
+
+$$\operatorname{Pr}(0|p,\lambda) = \operatorname{Pr}(\operatorname{drink}|p) + \operatorname{Pr}(\operatorname{work}|p) \times \operatorname{Pr}(0|\lambda)$$
+$$= p + (1-p) \times \exp (-\lambda)$$
+We can shorten it because the $\operatorname{Pr}(\operatorname{drink}|p)$ term just means the probability of drinking given p, which is just $p$. We convert the last term because based on the Poisson likelihood, $\operatorname{Pr}(y|\lambda) = \frac{\lambda^y \times \exp (-\lambda)}{y!}$, and when $y=0$ this just becomes $\exp (-\lambda)$. This is just mathematics speak for - *The probability of observing a zero is the probability that the monks didn't drink OR(+) the probability that the monks worked AND(x) didn't finish any manuscripts.* And now for the mixture part, because we our second likelihood. This time, we want the likelihood for a non-zero value of $y$:
+
+$$\operatorname{Pr}(y|y>0,p,\lambda) = \operatorname{Pr}(\operatorname{drink}|p)(0) + \operatorname{Pr}(\operatorname{work}|p) \operatorname{Pr}(y|\lambda) = (1-p)\frac{\lambda^y \exp (-\lambda)}{y!}$$
+Because drinking monks never produce $y>0$ because they're not working, above we are just describing the chance that monks are both working $1-p$, and produce $\lambda$ manuscripts. We define the zero-inflated poisson, $\operatorname{ZIPoisson}$ is defined as this mixture of distributions above, which at it's core is just repeating the kind of conditional likelihood that we saw in the code above for the survival analysis. The regression model could take the form
+
+$$y_i \sim \operatorname{ZIPoisson}(p_i,\lambda_i)$$
+$$\operatorname{logit}(p_i) = \alpha_p + \beta_p x_i$$
+$$\log(\lambda_i) = \alpha_\lambda + \beta_\lambda x_i$$
+We have two linear models and two link functions. The parameters of the linear model differ because any predictor such as $x$ may be associated differently with each part of the mixture. You could even make different linear models entirely for your different parts of the mixture. In our actual simple example though we're just going to measure the intercept or mean of $p$ and $\lambda$.
+
+Now lets simulate this data:
+
+```{r drunkmonk sim, fig.width = 5, height = 3}
+# parameters
+prob_drink <- 0.2 # 20% of days
+rate_work <- 1 # mean of 1 ms per day
+
+# sample one year
+N <- 365
+
+# days the monks drink
+set.seed(365)
+drink <- rbinom(N,1,prob_drink)
+
+# manuscripts completed
+y <- (1 - drink)*rpois(N,rate_work)
+
+# have a look
+simplehist(y)
+
+```
+For those zeros, some were produced when the monks were drinking, some when they weren't.
+
+And now for the model. This is presented in both the rethinking way where the distribution has been defined by Richard, and the stan way, with the mixture
+
+```{r drunkmonk ulam, error = F, warning= F, results = F, mesage = F}
+m12.3 <- ulam(alist(y ~ dzipois(p, lambda),
+                    logit(p) <- ap,
+                    log(lambda) <- al,
+                    ap ~ dnorm(-1.5,1),
+                    al ~ dnorm(1,0.5)),
+              data = list(y=y),
+              chains = 4)
+
+m12.3_alt <- ulam(alist(
+                    y|y>0 ~ custom(log1m(p) + poisson_lpmf(y|lambda)),
+                    y|y==0 ~ custom(log_mix(p, 0, poisson_lpmf(0|lambda))),
+                    logit(p) <- ap,
+                    log(lambda) <- al,
+                    ap ~ dnorm(-1.5,1),
+                    al ~ dnorm(1,0.5)),
+              data = list(y=as.integer(y)),
+              chains = 4)
+```
+
+And now lets inspect these models
+
+```{r drunkmonk model look}
+precis(m12.3)
+precis(m12.3_alt)
+
+post <- extract.samples(m12.3)
+mean(inv_logit(post$ap)) # probability of drinking
+mean(exp(post$al)) # mean rate of manuscript production
+```
+Even though we gave it no information on whether or not the monks were drinking, our Golem did a very good (simulated) job of estimating the probability of drinking.
+
+# Lecture 14 - Ordered Categories, Both Left and Right
+
+### Ordered categorical outcomes GLM
+
+Very common data type in the behavioural sciences. How much do you like this class (1-7)? How often do you see bats (lots, often, not much, none)? How happy are you (1-5)?
+
+Can't shuffle these categories around. The order matters, they are **ordinal** data. The constraints are i) discrete outcomes, but as an index ii) defined minimum and maximum - arbritrary but often 1-5, iii) defined order, iv) **distances between categories are not constant**. Distance is the underlying metric change.
+
+They are hard to model. BUT there is a good common solution. **Ordinal logistic regression**. We are again here making a monster. Use a **cumulative link** function.
+
+## Trolley problems
+
+Common moral question. Thought experiment in Philosophy. Imagine a trolley on track A - which has 5 people attached to the track. A second track, track B only has one person. Track A and B are connected at a fork, and controlled by a switch. Have to choose with killing one person or five people. Then philosophers ask the question to real people - *How morally permissible is it to pull the lever?* on a scale from 1-7, 1 ia never, 7 is always. People have strong opinions on this.
+
+Lots of trolley problems. Another one, trolley going under a bridge, with a person standing on top of the bridge. After the bridge the train will hit five people. There is a rather large person stood next to you, who you could push off and stop the trolley, but they will die. Again, is on a scale of 1-7 is it permissible. 3rd example is like the first, except now the trolley is already set to path B, and you have to decide whether to switch back to track A. How morally permissible is it NOT to pull the lever. 
+
+All three cases are the same consequence, and logically the same. But people feel very different about this.
+
+Three principles in moral intuition:
+
+* Action - Harm caused by action is morally worse than the same harm caused by inaction. 
+* Intention - Harm intended as a means to goal worse that same harm foreseen seen as a side effect.
+* Contact - Harm caused by physical contact worse than harm caused without.
+
+Intention is often used as the basis for legal grounding. Companies polluting but through a profit motive. Contact and Action interesting - can have action without contact but not vice versa.
+
+Option one has action but not intention and contact. Don't intend for single individual to die, its a consequence. Option two has all three - have to do something physical which is also action, and have to intend for larger individual to die. In the last one has none of them.
+
+This was a real experiment, with 30 scenarios that had varying presences of the three principles. 331 individuals, and 9930 responses. *How do responses vary with action, intention and contact? How do responses vary by age, gender and individual?* Lets look at the data.
+
+```{r trolley data, fig.width = 9, fig.height = 7}
+data("Trolley")
+
+# Have a look at the raw data by principles
+Trolley %>% 
+   mutate(act = if_else(action == 1, "action", ""), 
+          int = if_else(intention == 1, "intention", ""),
+          con = if_else(contact == 1, "contact", ""),
+          principle = paste(act, int, con)) %>% 
+   ggplot(aes(x = response, fill = principle)) +
+   geom_bar(show.legend = F) +
+   scale_x_continuous(breaks = 1:7) +
+   labs(x = "How morally permissible?", y = "Frequency") +
+   facet_wrap(~principle) +
+   theme_bw(base_size = 14) +
+   theme(panel.grid = element_blank(),
+         strip.background = element_blank())
+```
+
+One of the key features of ordinal data is number 4 i.e. I don't know. So you see a spike here. Reasonably flat distribution. Doesn't look like a count. However, you can see already suggested here that when there is both intention and either action or contact, people view the problem as far less morally permissible.
+
+## Ordered logit
+
+A categorical model like a binomial with more categories. But to model it we have use a log-cumulative-odds link probability. How do we describe this histogram on the logit scale. Think about it as a cumulative distribution - each response or lower. So first we want to convert from our distribution to a cumulative proportion.
+
+```{r trolley cumulative prop, fig.width= 4, fig.height = 4}
+resp_cumsum <- cumsum(table(Trolley$response)/nrow(Trolley))
+plot(1:7, resp_cumsum, type = "b", xlab = "Response", ylab = "Cumulative proportion")
+```
+And we are aiming to get the logit of this cumulative proportion to get the log-cumulative-odds link. This cumulative log-odds link is defined as follows:
+
+$$\log \frac{\operatorname{Pr}\left(y_{i} \leq k\right)}{1-\operatorname{Pr}\left(y_{i} \leq k\right)}=\phi_{k}$$
+
+We can interpret this as each probability of the response value $y$ which is less than some outcome $k$, this which is the cumulative proportion, divided by 1 - the cumulative proportion, and logged. This is the **logit** or the odds i.e the probability of something divided by the probability of not that thing. Then, $\phi_k$ describes an 'Intercept term' which is unique for each possible outcome of $k$ i.e. our responses. And with that we have our log-cumulative-odds link to our responses.
+
+```{r trolley cumulative log odds, fig.width= 4, fig.height = 4}
+logit <- function(x){log(x/(1-x))} # convenience function implementing the equation above.
+round(lco <- logit(resp_cumsum), 2) # logit of the cumsum
+```
+
+This is very similar to the log-odds of a normal logit, except we are using the cumulative sum of prior values of $k$. $\phi$ is where we're going to have our linear model, and describes this link. We're essentially doing a logistic regression but on the cumulative scale. **The cumulativenes preserves the order in the category**. 
+
+The last step to fit this model is that we need to use the cumulative probabilities to map back on to our response value. We doe this with a likelihood $\operatorname{Pr}(y_i = k)$, which is just our initial probabilities (not cumulative). With both this link and the likelihood, which are quite similar to the logit, but using a cumulative probability.
+
+Our convention here (there are varying ones in the literature) for describing a model will be as follows:
+
+$$R_i \sim \operatorname{Ordered-logit}(\phi_i, \kappa)$$
+$$\phi_i = 0$$
+$$\kappa_k \sim \mathcal{N}(0, 1.5)$$
+Where $\kappa$ can be thought of as our cutpoints in our different outcomes, which are our intercepts that cut our cumulative probability. If we run a markov chain where we estimate these cutpoints, we will obtain our cumulative probabilities but on the logit-scale, which we can simply back transform. Now our Markov chain takes a lot longer because we have a lot of data.
+
+```{r trolley cutpoints, error = F, warning= F, results = F, mesage = F}
+
+m12.4 <- ulam(alist(R ~ dordlogit(0,cutpoints),
+                    cutpoints ~ dnorm(0,1.5)),
+              data = list(R = Trolley$response),
+              chains = 1)
+
+precis(m12.4, depth = 2)
+
+```
+
+```{r trolley cutpoints precis}
+resp_cumsum
+colMeans(inv_logit(extract.samples(m12.4)$cutpoints))
+```
+
+## Adding predictor variables
+
+The cutpoints are our intercepts for the model. Then we have $\phi$ which is our linear model which includes our Betas. We subtract our $\phi$ from $\alpha_k$ because we want to shift probability mass down when scores go up. This ensures that positive coefficients are associated with increased scores/ratings. We're looking at an interaction model with action $A$, contact $C$ and intention $I$:
+
+$$\phi_i = \beta_A A_i + \beta_c C_i + B_{I,i} I_i$$
+$$B_{I,i} = \beta_I + \beta_{IA}A_i + \beta_{IC}C_i$$
+So, this linear model is split in to two linear models here, because you have your interaction terms that multiply with our intention. Could also be written like this:
+
+$$\phi_i = \beta_A A_i + \beta_c C_i + \beta_I I_i + \beta_{IA}A_i I_i + \beta_{IC}C_i I_i$$
+But Richard finds this more difficult to look at. Up to you how you present this.
+
+```{r trolley predictors, error = F, warning= F, results = F, mesage = F}
+
+trolley_list <- list(R = Trolley$response,
+                     A = Trolley$action,
+                     C = Trolley$contact,
+                     I = Trolley$intention)
+
+
+m12.6 <- ulam(alist(R ~ dordlogit(phi,cutpoints),
+                    phi <- bA*A + bC*C + BI*I,
+                    BI <- bI + bIA*A + bIC*C,
+                    c(bA,bC,bI,bIA,bIC) ~ dnorm(0,0.5),
+                    cutpoints ~ dnorm(0,1.5)),
+              data = trolley_list,
+              chains = 4, cores = 4)
+
+```
+
+The coefficients in this model are slightly different in terms of interpretation. You need to think of this in terms of the cumulative probability once more. The cutpoints give you the intercepts, or cumulative probabilities. The coefficients then give you the overall shift in these cumulative probabilities. **The shift in the histogram when you add/subtract a variable**. We have a look at these posterior coefficients below. You can see that adding in any of our three principles has quite a negative effect on the cumulative probability i.e. it shifts the histogram towards negative approval. Just note this is on the logit scale though. Intention and contact really shifts the histogram down. You're not predicting a point here but a distribution, you get a vector or a **simplex**.
+
+```{r trolley precis}
+precis(m12.6)
+```
+
+Now lets plot the cumulative probability predictions. When the values go up, we're shifting probability mass down to the bottom of the distribution. But we need to do this for each of our cutpoints. So we will get the new cumulative probabilities. We get this using `link` and then `pordlogit`, and we can also go back on to the outcome scale i.e. responses, using `sim`. We will do this for an example where we look at the interaction between intention and contact.
+
+```{r trolley predict, fig.width= 7, fig.height= 6}
+
+# Cumulative probability
+trolley_preddat <- data.frame(A = 0, I = 0:1, C = 1) # prediction data
+phi <- link(m12.6, data = trolley_preddat)$phi # extract the phi part of our model
+post <- extract.samples(m12.6)$cutpoints # posterior samples of the cutpoints
+
+# have to convert this back to our cumulative probabilities
+resmat <- matrix(nrow = nrow(phi)*2, ncol = 6)
+for(i in 1:nrow(phi)){
+   pord = pordlogit(1:6, phi[i,], post[i,])
+   rownum = (i*2)-1
+   resmat[rownum:(rownum+1),] = pord
+}
+
+cumprob_pred <- as.data.frame(resmat)
+
+trolley_preddat %>% 
+   slice(rep(1:n(), times = 2000)) %>% 
+   bind_cols(., cumprob_pred) %>% 
+   mutate(sim = rep(1:2000, times = 2)) %>% 
+   pivot_longer(cols = starts_with("V"), names_to = "cum_response", names_prefix = "V") %>% 
+   mutate(cum_response = as.numeric(cum_response)) %>% 
+   group_by(I, cum_response) %>% 
+   summarise(mn = mean(value),
+             lwr = PI(value)[1],
+             upr = PI(value)[2]) %>% 
+   ggplot(aes(x = I, y = mn, colour = factor(cum_response), fill = factor(cum_response))) +
+   geom_smooth(aes(ymin = lwr, ymax = upr), stat = "identity") +
+   scale_x_continuous(breaks = 0:1) +
+   scale_fill_brewer(name = "Response", palette = "Set1", aesthetics = c("colour", "fill")) +
+   labs(x = "Intention", y = "Posterior cumulative probability") +
+   theme_bw(base_size = 13) +
+   theme(panel.grid = element_blank())
+
+# histogram of responses
+s <- sim(m12.6, data = trolley_preddat) # one column of simulated outcomes for each row in the data
+simplehist(s, xlab = "Response") # blue is intention = 1, black is intention = 0
+
+```
+
+## Ordered categorical predictors
+
+It is also a bit of challenge to include ordered categories as predictor variables - including them as linear terms isn't ideal because again the distances between our response categories isn't necessarily equal. Luckily, we can construct ordered effects as well as ordered outcomes.
+
+Now we're going to add education level as a predictor in the same model (not actually going to fit the model - just conceptual). From elementary school up to graduate degree. Includes categories such as 'some college'. Each level will get a unique parameter and there will be an ordering. We then *assign a prior to the total effect and to the proportions of the total effect*. Again it is a cumulative effect. The education level of each respondent is denoted with $E_i$ Each parameter in this ordered category (up to $j$ categories) is assigned with a $\delta$, which is then included in our linear model for $\phi$ as sum with an overall effect as well.
+
+$$\phi_i = \beta_E \sum_{j=0}^{E_i - 1} \delta_j + \beta_A A_i + \beta_c C_i + \beta_I I_i$$
+So for each individual in the dataset, they get a parameter for each education level they have completed, hence why you sum to $E_i - 1$. So if you reached the third level, you would get 3 parameters. We have the linear term $\beta_E$, which is the total summed effect of education level, and our delta parameters sum to 1. So we get one less $\delta$ parameters in reality like in the cumulative probability. Because the parameters of $\delta$ sum to one, they are in proportion to one another.
+
+This proportional ordered category is captured very nicely with a **Dirichlet** distribution prior. This distribution is for probability distributions with discrete outcomes derived from the Beta distribution. It has a vector parameter $\alpha$ which gives the pseudo-counts for each possibility i.e. the different education levels. The result of the Dirichlet distribution is a probability distribution for each of our $\alpha$ categories. By setting all the $\alpha$ values as equal, you are saying that you don't think any of the parameters has a bigger probability than the others but *does not* mean they are the same. The bigger the $\alpha$s are, the more similar you think the probabilities are. You can make the values different too if you have prior expectation about the probability distribution.
+
+You can see how this was fit in the book (as you won't need this yourself). The notation in `ulam` is a little bit odd, because you have to define that you are summing over education level, and create something called a simplex to loop through these sums.
+
+The result is that **Education level makes you have more negative scores i.e. means you think the scenarios are less morally permissible in any of the cases**. The education level 'some college' however doesn't have a big effect at all. This is like the 4s in the response, where probably the people filling out the form didn't know what to put or something like that. So, this suggests that if we were to have included education level as a more simple linear term, we would have underestimated the effect of education level, because of the 'some college' respondents. This **isn't** a linear term.
+
+
+
+
