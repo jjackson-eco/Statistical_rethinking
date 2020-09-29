@@ -13,7 +13,7 @@ Due to the computation involved in running the Markov chains for GLM and mixed e
 2. Chapters 9-12 - `Statistical_Rethinking_9_12.Rmd`
 3. Chapters 13 & 14 - `Statistical_Rethinking_13_14.Rmd`
 
-These markdown files are also accompanied by their resultant html files.
+These markdown files are also accompanied by their resultant html files - again to save on computation.
 
 To run the markdown files yourself, you will need to have all of the following packages installed:
 
