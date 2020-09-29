@@ -1,0 +1,2565 @@
+---
+title: "Chapters 1-8"
+subtitle: "Statistical Rethinking: Bayesian inference and data analysis using R and Stan"
+author: "John Jackson"
+date: "July 2020"
+output: 
+   rmdformats::material:
+      highlight: haddock
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This markdown serves as a companion to Chapters 1-8 of the Statistical Rethinking book by Professor Richard McElreath as presented on [YouTube](https://www.youtube.com/channel/UCNJK6_DZvcMqNSzQdEkzvzA) from his Winter 2019 lectures 1-9, plus additional notes from the book and homework tasks. The lectures are generally aligned with the book chapters here until Chapter 7, which has 2 lectures of content (it's dense). So chapter 8 is in lecture 9. You need the following packages:
+
+```{r packages, warning=FALSE, message = F}
+require(tidyverse)
+require(gridExtra)
+require(rstan)
+require(rethinking)
+require(dagitty)
+```
+
+***
+
+# Lecture 1 - The Golems of Prague
+
+### Introduction to Bayesian statistics and the idea of statistical rethinking
+
+The key aim with this course is to move away from the traditional world of flow charts that prescribe statistical tests. The statistical tests can often be useful for a specific instance or set of circumstances. A lot of weight is given to the hypotheses and inference made using these tests. However, these tests are little robots, or tools, not logical scientific entities within themselves. They work for a narrow range of inputs.
+
+The analogy here is of the mythological robots from Jewish folklore - clay **Golems**. They were powerful robots that were designed and inscribed with *emet* (truth) by their human makers, often for a noble cause to protect Jews from persecution. Legend has it that Rabbi Judah from the city of Prague built one such golem to protect Jews, but made a grave mistake acting as a god and meddling in the power of the golem, which was only designed with simple human instructions. The golem destroyed Prague, and Judah had to kill the golem by changing the inscription to *met* (death). 
+
+So, all we can do is become better engineers and design better models, or tools, for our scientific endeavours.
+
+> all models are false, but some are useful
+
+**But** really, we can't think of models as true or false, they are just tools and robots that we use to make inference. To extend this to the work of Popper, who is largely (wrongly) accredited with the idea of falsification of null models in science. In fact, null models in themselves are problematic, because models may falsify many many null hypotheses and null models are not unique. What Popper actually meant was that falsification, and science, is consensual, a critical discussion. We instead should *falsify our explanatory model* and not the null (this is pointing to model comparison rather than simple accept/reject paradigm). Science is just a social technology. 
+
+The framework that we will learn here to take these engineering lessons:
+
+1. Bayesian Data Analysis
+      i) We want to use **probability to describe uncertainty** - This is an extension of binary logic to continuous plausibility
+      ii) We are going to eventually use Markov Chain Monte Carlo Methods to fit Bayesian models and describe this uncertainty
+      iii) The aim is to **count all of the way that the data can happen based on our assumptions, and assumptions that have more ways that are consistent with the data are more plausible**.
+
+2. Multilevel modelling
+      i) A powerful tool for the real (messy) world with multiple levels of uncertainty.
+      ii) Basically models within models, where each parameter in a model becomes a model - intuitively Bayesian.
+      iii) Excellent for repeated measures, or any sort of **structure in our data**.
+
+3. Model Comparison
+      i) This enables us not to falsify the null, but instead compare competing meaningful models.
+      ii) Critically this allows us to use Okhams razor, keep parsimony, and prevent overfitting.
+
+We will also be using the **Small Worlds** vs. **Large Worlds** paradigm to make Baysian inference. Think of Colombo's (vile piece of shit) mistake in accidentally landing in America. The small world here was the old maps and cartography, particularly those of Beinheim, that misinformed him. This is the world of the golem, or the model, which can be optimized. The large world is the real world, the actual nature of things i.e. that the Pacific Ocean is actually very big and there was a whole continent in the way of the journey. In the real world there is no guarantee of optimization. We need to worry about both the small and large worlds. To use a very jargony marketing phrase that sums this up perfectly:
+
+> Think global, act local
+
+To reiterate, we are using the small world of Bayesian Inference:
+
+> Count all the possible ways that the data can happen based on our assumptions. The assumptions that have more ways consistent with the data are more plausible
+
+The marble example provides a good example of this. We have a bag with four marbles that are blue and white, and we pull out three marbles, note the colour and then return them to the bag. And what we want to know is the true number of blue/white marbles in the bag. With a bag of four marbles with two colours, there are five possible combinations, or conjectures i.e. there are five sets of assumptions we can test the data against in terms of plausibility.
+
+**Probability = normalised counting**, or short cuts for counting. We count the number of ways that we can see our data based on the assumptions of each conjecture. The assumptions that the data meets in most ways is the most plausible i.e. the number of ways the data can fit the conjecture is the **posterior**. We can update our counts with a process called Bayesian updating.</p>
+</details>
+
+***
+
+# Lecture 2 - The Garden of Forking Data
+
+### Bayesian inference walk-through
+
+The garden of forking data is just the way of counting up all the ways the data can happen based on our assumptions. Each fork is a new way. So, now we are going to demonstrate Bayesian inference using a simple experiment with a simple question - **what proportion of the globes surface is covered by water?**
+
+The experiment is as follows: Throw an inflatable globe in the air, catch it, and note whether your index finger lands in the water (W) or on the land (L).
+
+Bayesian inference follows three steps, which we outline for this example first before building the model in more detail:
+
+1. **Design the model** - the story of the data
+      i) Random throws, or trials N
+      ii) Want to find out the true proportion of water, p
+      iii) With each toss of the globe we have a probability p of observing W (and 1-p for L).
+      iv) The tosses are independent
+      v) We need to translate the story of the data into a set of probability statements.
+
+2. **Condition the model** 
+      i) Bayesian updating defines the optimal learning in small world in which we convert prior knowledge to a posterior
+      ii) Giving your golem an information state before it sees any data.
+      iii) Here, the information state is our confidence in each possible value of p between 0-1.
+      iv) Then we condition based on the data -> our new confidence in each value of p conditional on the data i.e. the posterior.
+
+We can show a small example of this graphically, where we update our confidence in p based on two separate throws of the globe with 2 trials, N. The first is an observation of 1 W, and the second is an observation of L. We will treat these as separate updates here, but in reality we update over the whole dataset i.e. all trials.
+
+```{r Conditioning example, echo = F, fig.height= 4, fig.width= 11}
+
+dat <- tibble(p = seq(0,1,length.out = 1000), prior = 0.5, 
+              update_1 = p, update_2 = -(p^2) + p)
+
+prior_plot <- ggplot(dat, aes(x = p, y = prior)) + geom_line(size = 1.2) + 
+   labs(x = "Proportion of water, p", y = "Plausibility",title = "prior") + 
+   theme_bw(base_size = 15) + theme(panel.grid = element_blank(), 
+         axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+update1 <- ggplot(dat, aes(x = p, y = update_1)) + 
+   geom_line(aes(y = prior), linetype = "dashed") +
+   geom_line(size = 1.2) + 
+   labs(x = "Proportion of water, p", y = "Plausibility", title = "W") + 
+   theme_bw(base_size = 15) + theme(panel.grid = element_blank(), 
+         axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+update2 <- ggplot(dat, aes(x = p, y = update_2*3)) + 
+   geom_line(aes(y = update_1), linetype = "dashed") +
+   geom_line(size = 1.2) + 
+   labs(x = "Proportion of water, p", y = "Plausibility", title = "WL") + 
+   theme_bw(base_size = 15) + 
+   theme(panel.grid = element_blank(), 
+         axis.text.y = element_blank(), 
+         axis.ticks.y = element_blank())
+
+grid.arrange(prior_plot, update1, update2, ncol = 3)
+
+```
+
+So we start of with prior information, which is that the proportion of water across the globe, p, is equally likely to be any value between 0-1. This is called an uninformative prior. Then, in the next step, we condition the model based on the observation of the first W. Now, it is impossible for p to be 0, and most plausible for p =1 based on this single observation. The posterior is the confidence in each value of p conditional on the data observed. The posterior in each step of updating is then prior in the next step of updating, which is adding in our second observation of an L ans so a sequence of WL (water then land). In this next prior, the most plausible value of p is 0.5, because we have observed both an L and a W. However, we don't normally update like this, adding in one observation at a time, we usually do this over our entire dataset.
+
+3. **Evaluate**
+     i) This is the Bayesian inference - logical answer to a question in the form of a model.
+     ii) "*How plausible is each proportion of water given these data*"
+     iii) Our golem must be supervised -> makes sense? malfunctioned?
+     iv) Check the sensitivity of answers to changes in the assumptions.
+
+
+Now lets actually construct the model formally (step 1) by listing the variables, defining generative relations between them and then asking questions of the model. We are building a **joint model**, which includes the prior probability of the data and the parameters.
+
+Variables:
+
+* N - number of throws or trials
+* W - number of times landed on water
+* p - the true probability of the proportion of water
+
+N and p cause W, but we infer p from W and N. p is unobserved, whereas W and N are observed. So lets define these by converting them to probability statements:
+
+N is a fixed number.
+W is the relative number of ways to see W, given N and p -> a probability distribution.
+
+And W actually follows the binomial distribution, such that the probability of the data W, given N and p, or $Pr(W|N,p)$ is given by
+
+$$Pr(W|N,p) = \frac{N!}{W!(N-W)!}p^{W}(1-p)^{N-W}$$
+The factorials here are all the combinatorial numbers (all the possibilities in the forked garden). This combinatorial process gets very big very fast and therefore limits a lot of Bayesian inference. Often we need to approximate.
+
+Our initial prior is a uniform prior i.e. equal plausibility for each value of p (no useful previous knowledge). The implications of prior choice is really tricky, not an easy subject but not covered here.
+
+**The joint model**
+
+$$W \sim {\sf Binomial}(N,p)$$
+$$p \sim {\sf Uniform}(0,1)$$
+Where we have defined our parameters W and N, as well as our prior p.
+
+## The Posterior
+
+Then, our Bayesian "*estimate*" is always the **posterior distribution** of our parameters given the data, $Pr(parameters|data)$, which here is $Pr(p|W,N)$. Here, the posterior can be computed with Bayes theorem:
+
+$$Pr(p|W,N) = \frac {Pr(W|N,p)Pr(p)}{\sum Pr(W|N,p)Pr(p)}$$
+Which, simplified is **Posterior = probability of observed variables x prior/ normalising constant**
+
+And the probability of your data given the unobserved $Pr(W|N,p)$, which is our probability distribution for W, is the **Likelihood**. In other words, the posterior is the standardised (all the products added up and divided by the sum) product of the prior probability and the probability of your data or likelihood:
+
+$$Prior\, {\sf x} \, Likelihood \propto Posterior$$
+
+There are several ways that we can compute the posterior, which in this case are relatively simple but as you model complexity increases become more and more computationally intensive:
+
+1. **Analytical approach** - solving for the probability distribution (integration) - Not even always possible
+2. **Grid Approximation** - Very computationally intensive 
+3. **Quadratic/Laplace Approximation** - Limited
+4. **Markov Chain Monte Carlo (MCMC)** - intensive but very applicable and useful
+
+## Grid Approximation
+
+In the grid approximation, we use a finite grid of parameter values (here our prior) instead of a continuous space (analytical approach). This gets very computationally expensive when you have a lot of parameters, but often provides a good approximation. 
+
+Now we can get to the R-code for the grid approximation of 3 trials of our globe tossing experiment (WLW). In this, we make a grid (in this case a vector) of finite values of our unobserved parameter p. Then, we create a uniform prior over that grid of values and then use `dbinom` or the density of the binomial distribution to calculate our likelihood given our data (N and W) and our grid of the unobserved parameter. Then we take the product of the prior and likelihood and standardise to give the final posterior. Here we repeat this exercise over differing grid sizes, 3,5,20 and 1000 values:
+
+```{r grid approximation 1, fig.height= 10, fig.width= 10, message=F}
+
+gval <- c(3,5,20,1000)
+
+par(mfrow = c(2,2))
+for(i in gval){
+p_grid <- seq(0,1,length.out = i) # finite grid across our unobserved parameter p
+prob_p <- rep(1, i) # uniform prior over those grid values, set to 1 so integral sums to 1
+prob_data <- dbinom(2, size = 3, prob = p_grid) # this is our likelihood of observing 2 Waters from 3 trials given our grid of unobserved p
+
+posterior <- prob_data*prob_p # our approximate posterior
+posterior <- posterior/sum(posterior)
+
+# have a look at this - here because we have an uniform prior have our peak at 0.66 or 2 out of 3 trials
+if(i == 1000){
+   plot(posterior ~ p_grid, type = "l", main = paste0("Finite grid of ", i), 
+     xlab = "Proportion of water", ylab = "Posterior probability", cex = 2,
+     cex.lab = 1.5)}
+else{plot(posterior ~ p_grid, type = "b", main = paste0("Finite grid of ", i), 
+     xlab = "Proportion of water", ylab = "Posterior probability", cex = 2, 
+     cex.lab = 1.5)}
+}
+dev.off()
+```
+
+## Sampling from the Posterior
+
+It is incredibly useful to take random samples from our posterior distribution, it enables us to visualise uncertainty, compute confidence intervals (credible intervals), and simulation observations to check our predictions.
+
+Furthermore, MCMC methods, which are most useful for statistical models, only draw samples from the posterior, so very useful to know how to do this. So, we follow steps 1 and 2 to compute our approximate posterior, then sample this with replacement, and then compute things we are interested in from it.
+
+In particular, calculating intervals of either a defined boundary or a defined mass to describe the shape of the posterior. Using this we can find the percentiles (often very useful) to summarise this shape. Point estimates are not inherently useful here, but they are needed for applied work. The key thing is that broader summaries of the posterior are more useful. Confidence intervals from frequentist statistics are not what they say they are and are *non bayesian*. **Credible intervals** are the most commonly used, but also not credible unless you trust your data. For a small world view of the intervals, Richard is trying **compatibility intervals** i.e. the values most compatible with the model and data.
+
+Here we have a simple example of sampling from our posterior (1000 grid draws) where we look at the density and the percentile intervals:
+
+```{r sampling posterior 1, fig.height=5, fig.width=10}
+samples <- sample(p_grid, prob = posterior, size = 1e4, replace = T)
+
+par(mfrow = c(1,2))
+plot(samples, col = "blue", cex = 0.2, pch = 19)
+plot(density(samples), col = "blue")
+dev.off()
+
+quantile(samples, c(0.025, 0.5, 0.975))
+```
+
+Finally, we can use the samples from the distribution to make predictive checks i.e. simulate observations and compare these to our predictions. This gives a sampling distribution conditional on many true values of p.
+
+```{r predictive check 1, fig.height= 3, fig.width= 5}
+nw <- rbinom(n = 1e4, size = 9, prob = samples)
+hist(nw)
+```
+
+## Homework questions - posterior comparisons
+
+```{r homework 1, fig.height=5, fig.width=10}
+## 1. 8 Water in 15 tosses
+p_grid1 <- seq(0,1,length.out = 100) 
+prob_p1 <- rep(1, 100) 
+prob_data1 <- dbinom(8, size = 15, prob = p_grid1) 
+
+posterior1 <- prob_data1*prob_p1
+posterior1 <- posterior1/sum(posterior1)
+
+## 2. Majority of earths surface is water (better prior)
+p_grid2 <- seq(0,1,length.out = 100) 
+prob_p2 <- c(rep(0, 50), rep(1,50)) 
+prob_data2 <- dbinom(8, size = 15, prob = p_grid2) 
+
+posterior2 <- prob_data2*prob_p2 # our approximate posterior
+posterior2 <- posterior2/sum(posterior2)
+
+par(mfrow = c(1,2))
+plot(posterior1 ~ p_grid1, type = "l", main = "8 Water in 15 Tosses", 
+     xlab = "Proportion of water", ylab = "Posterior probability",  
+     cex.lab = 1.5)
+plot(posterior2 ~ p_grid2, type = "l", main = "Majority Water", 
+     xlab = "Proportion of water", ylab = "Posterior probability", 
+     cex.lab = 1.5)
+dev.off()
+
+```
+
+***
+
+# Lecture 3 - Geocentric Models
+
+### Linear regression walk-through
+
+Unconventional foundation of regression. Frustration about science is we are often trying to describe more complex problems than our senses currently allow.
+
+Mars has retrograde motion in the sky. Attributed to illusion based on relative positions and our orbit of the sun. Other models include **Geocentrism**, which basically describes orbits upon orbits (epicyles) using fourier series. These describe how Mars moves across the night sky, but they are mechanistically wrong. Same for regression? These epicyle models used for planetariums.
+
+**Regressions - descriptively accurate, mechanistically wrong**. Don't build in causation, they are descriptional tools (hence the link)
+
+Linear regression - Simple statistical golems that measure the mean of a variable (using it's mean and variance from a aussian distribution) as an additive combination of weighted variables with a constant variance. Gaus is one of the inventors of linear regression, but actually used a Bayesian framework.
+
+Normal (Gaussian) distributions are so common in nature and statistics, and easy to calculate with. They're additive. Intuition for this - football pitch and everyone lines up on the centre line. Flip a coin, heads move left, tails step right. People will scatter around the field. If you measure everyone's relative position to the centre after a certain number of steps, this will look very gaussian. Why? Lots of little fluctuations (up and down), which in the end cancel out with a mean zero. More combinations of coin tosses (combinatorics) give you a relative position near zero. Human height is caused by little fluctuations in genetics (product of small deviations). Addition produces bell curves, any mathematical process where the order of terms doesn't matter. Logarithms of products also gaussian.
+
+Two perspectives on why gaussian distributions are so normal, the: 
+1. **Ontological perspective**. 
+   i) Processes that add fluctuations result in dampening, and dampening ends up gaussian. The only information left is the mean and the variance. But, **you can't infer the process from the distribution**. This is what we do science on. This view is true for lots of the maximum entropy distributions. 
+2. **Epistemological perspective**
+   i) Know only the mean and the variance. On this, it is the most conservative and least surprising (maximum entropy) model that we can assume. Nature likes maximum entropy distributions.
+
+
+***
+
+## Linear Models 
+Models of normally distributed data. t-test, single regression, multiple regression, ANCOVA, ANOVA, MANOVA, MANCOVA, yadda yadda. **THEY ARE ALL THE SAME**. Learn the strategy not the procedure.
+
+Language for modelling based on the globe tossing model from above, where we formally out the distributions of the W and the p. $W \sim {\sf Binomial}(N,p)$ is the outcome for $W$, $\sim$ means *is distributed* by some distribution (here Binomial) based on the number of trials and some parameter to estimate. $p$, the parameter to estimate, has some prior distribution set out with $p \sim {\sf Uniform}(0,1)$.
+
+Same for a more elaborate model.
+
+## Defining a linear model:
+
+$$y_i \sim {\sf Normal}(\mu_i, \sigma)$$
+$$\mu_i = \beta x_i$$
+$$\beta \sim {\sf Normal}(0, 10)$$
+$$\sigma \sim {\sf Exponential}(1)$$
+$$x_i \sim {\sf Normal}(0, 1)$$
+
+All variables in your linear regression have a distributional description. Here we say that $y$ is described by a normal distribution with mean $\mu$ and variance $\sigma$, which in turn have their own descriptions. The $\beta$ is our unobserved parameter here in a simple linear regression. Just have to define each of these. All the data having distributional descriptions allows us to incorporate error etc.
+
+## An example
+
+Nancy Howell's seminal work on drivers of human height in the Dobe !Kung people.
+```{r load howell}
+data(Howell1)
+
+d <- Howell1
+glimpse(d)
+```
+
+The height $h$ of individuals $i$, i.e. $h_i$ provides us with a first model:
+
+$$h_i \sim {\sf Normal}(\mu, \sigma)$$
+This is, the height of an individual is distributed normally with a mean $\mu$ and variance $\sigma$. Mu and sigma are just conventional.
+
+add our priors, which are for $\mu$ and $\sigma$:
+
+$$h_i \sim {\sf Normal}(\mu, \sigma)$$
+$$\mu \sim {\sf Normal}(178, 20)$$
+$$\sigma \sim {\sf Uniform}(0, 50)$$
+Here we're saying the mean mu follows a normal distribution with mean 178 (Richard's height- himself as a prior) and sd of 20 (on the mean not the population i.e. very generous. Sigma is uniform and between 0-50, which is certainly less than what we know.
+
+## Prior predictive distributions
+
+What do these priors imply about height even before we see data => simulate it with prior predictive distributions.
+
+```{r ppd howell, fig.height= 4, fig.width= 5}
+sample_mu <- rnorm(1e4, 178, 20)
+sample_sigma <- runif(1e4, 0,50)
+
+# prior heights simulated with each vector, 
+prior_h <- rnorm(1e4, sample_mu, sample_sigma)
+
+# rethinkings version of a density plot dens()
+dens(prior_h)
+```
+
+This density is actually a t distribution, because there is uncertainty about the sigma (variance) and it has wide tails i.e. they predict essentially impossible values of human height. Need to try and build in **common sense** to our priors.
+
+## Computing the posterior
+
+Now we aim for the posterior distribution, which has 2 dimensions now, for mu and sigma. Here Richard uses grid approximation here for the last time - compute the posterior based on the likelihood of the data for many combinations of mu and sigma (product of likelihood and the priors). Code to do this is just looping through mu and sigma values with `sapply`, but this is really labour intensive of course. Combinatorix will get yah. Sigma has a strange posterior predictive distribution because its always positive. More large values than small, so small skew in variance/scale parameters.
+
+## Quadratic approximation
+
+Approximate posterior as a gaussian, **multivariate normal**. This is a surprisingly good approximation for all linear models, even for sigma. Can estimate with two things: The peak of the posterior, *maximum a posteriori* (MAP) and the standard deviations & correlations of our parameters. It finds the peak by following the steepness of the posterior from its starting point, gradient ascent of the posterior. Is it called the quadratic approximation because the peak is fit with a quadratic curve? With flat priors, this algorithm is the same as conventional maximum likelihood estimation.
+
+We're going to use `quap` from the `rethinking` package to do our quadratic approximation. quap converts the model definition to a statement about the log probability of the data at any combination of the parameters, and passes that to the algorithm for optimisation (hill climbing), which is `optim()` in `R`. The result is a list of the means and the covariance matrix, and with this we form the gaussian posterior distribution. We use `alist` first to define all of the parts of our model, then approximate the posterior with `quap`, then we sample from the posterior to see what it looks like:
+
+```{r quap 1, fig.height=4, fig.width=8}
+
+# define the model - alist from rethinking
+flist <- alist(
+   height ~ dnorm(mu,sigma),
+   mu ~ dnorm(178, 20),
+   sigma ~ dunif(0,50)
+)
+
+# quadratic approximation of the posterior with quap 
+m4.1 <- quap(flist, data = d)
+
+# rethinking version of summary from models = precis
+precis(m4.1)
+
+# posterior samples from rethinking again
+posterior_samp <- extract.samples(m4.1, n = 1e4)
+dens(posterior_samp, show.HPDI = TRUE)
+```
+
+`quap` is a scaffold to learn how to do modelling and understand what they are. Forces full specification of the model so we learn it. Quadratic approximation works with a wide set of models. Same as penalised maximum likelihood. This isn't always a good way to approximate the posterior.
+
+## Linear model with a predictor variable
+
+*How does weight describe height?* Now we're getting into the actual statistics questions.
+
+```{r howell plot, echo = FALSE, fig.height = 4, fig.width = 4}
+ggplot(filter(d, age >= 18), aes(x = weight, y = height)) + 
+   geom_point(alpha = 0.6, size = 2.5, colour = "cornflowerblue") +
+   labs(x = "Weight (kg)", y = "Height (cm)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+```
+
+Define a linear model of the mean $\mu$ as before. Except this time each individual $i$ has a mean $\mu$ of height rather than just the population:
+
+$$h_i \sim {\sf Normal}(\mu_i, \sigma)$$
+$$\mu_i = \alpha + \beta(x_i - \overline {x})$$
+$$\alpha \sim{\sf Normal}(178,20)$$
+$$\beta \sim{\sf Normal}(0,10)$$
+$$\sigma \sim{\sf Uniform}(0,50)$$
+
+The prior for $\alpha$ is the population mean as before, now that we have each individual with a height to estimate the slope term $\beta$. Difference here is that we define $\mu_i$ deterministically as being dependent on the intercept + slope. Here we are subtracting $x_i$ from $\overline x$ to standardise so that $\mu = \alpha$ when $\beta = 0$. This is **centering**. 
+
+Prior predictive distribution. Just sampling from our priors of alpha and beta. Just creates a lot of lines:
+
+```{r ppd lin mod pred, fig.height= 4, fig.width= 5}
+set.seed(2971)
+N <- 100
+a <- rnorm(N, 178, 20)
+b <- rnorm(N, 0, 2)
+
+dt <- tibble(intercept = a,  slope = b, n = 1:100)
+
+ggplot(filter(d, age >= 18), aes(x = weight, y = height)) +
+   geom_abline(aes(intercept = intercept, slope = slope), data = dt, alpha = 0.5) +
+   lims(y = c(-100,400), x = c(-65,65)) + # This bit doesn't seem intuitive - but because of the centering (dealt with in later plots)
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+   
+   
+```
+
+## Improving our priors
+
+Priors by themselves predict impossible heights and very wacky relationships. This bad prior is OK in a simple example, but can matter a lot for more complex models. So lets improve our priors. We expect $\beta$ is positive, so we can update this prior to a more sensible log-normal distribution, which are strictly positive:
+
+$$\beta \sim \sf{Log\ Normal}(0,1)$$
+with the mean and the sd on the log scale. This looks like this and produces much more sensible predictions:
+
+```{r lognorm beta, fig.height= 4, fig.width= 5}
+b <- rlnorm(1e4, 0, 1)
+dens(b, xlim = c(0,5), adj = 0.1)
+```
+
+Try and get yourself into a possible output space.
+
+## Quadratic approximation of the posterior for a linear regression
+
+Now we fit the model and approximate the posterior.
+
+```{r quap weight height}
+
+# only the adults 
+d2 <- d[d$age >= 18,]
+
+# define x-bar the average weight- this was affecting the scaling from before in the plots - RESCALE!!
+xbar <- mean(d2$weight)
+
+# approximate that posterior!
+m4.3 <- quap(
+   alist(height ~ dnorm(mu, sigma),
+         mu <- a + b*(weight - xbar),
+         a ~ dnorm(178,20),
+         b ~ dlnorm(0,1),
+         sigma ~ dunif(0,50)),
+   data = d2
+)
+
+# have a look
+precis(m4.3)
+
+```
+
+***
+
+# Lecture 4 - Wiggly Orbits
+
+### Uncertainty, curves and splines
+
+Extending now to fit lines (both straight and curved) to our data based on our posterior, to display the uncertainty, and to fit polynomial and spline linear models as well. Yes, they are both linear models.
+
+For our example of the heights and weights of adults of the !Kung people, We can now map the line of best fit, or in this case the mean of the posterior line, to our data of heights and weights. Remember, in the quadratic approximation **we need both the means of the model parameters and the variance-covariance matrix** because we are dealing with a multidimensional model with more than one parameter that we are trying to estimate. This is dealt with using `extract.samples`, but bear it in mind.
+
+```{r linear mod posterior mean line, fig.height = 5, fig.width = 5}
+
+post <- extract.samples(m4.3)
+a_map <- mean(post$a)
+b_map <- mean(post$b)
+
+# mapping to a 0 intercept for ggplot - 
+# the intercept is currently centered because it is beta(x - xbar) in the model
+a_map0 <- a_map - (b_map*(mean(d2$weight)))
+
+ggplot(d2, aes(x = weight, y = height)) + 
+   geom_point(alpha = 0.6, size = 2.5, colour = "cornflowerblue") +
+   labs(x = "Weight (kg)", y = "Height (cm)") +
+   geom_abline(intercept = a_map0, slope = b_map,) +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+   
+```
+
+## Showing Uncertainty
+
+This regression line along with the raw data is actually very useful by itself for a simple linear regression. However, we also want to display uncertainty in our approximation of the posterior. To do this we have to follow a similar pattern by *sampling from the posterior*:
+
+1. Use mean and standard deviation to approximate the posterior.
+2. Sample from a *multivariate normal* distribution of the parameters.
+3. Use samples to generate predictions that integrate over the uncertainty.
+
+Each row of our posterior object is a sample from the posterior with betas and sigmas that incorporate the uncertainty in beta sigma. I.e. the posterior is full of lines. 
+
+```{r posterior sample glimpse}
+head(post)
+```
+
+Lets do a reminder of Bayesian updating to investigate this uncertainty with two initial smaller samples of the initial dataset.
+
+```{r quap weight height UPDATING uncert, fig.height = 4, fig.width = 8}
+
+# 20 and 100 individual samples
+set.seed(100)
+d20 <- d2[sample(1:nrow(d2), 20,replace = F),]
+d100 <- d2[sample(1:nrow(d2), 100,replace = F),]
+
+# define x-bar the average weight- this was affecting the scaling from before in the plots - RESCALE!!
+xbar20 <- mean(d20$weight)
+xbar100 <- mean(d100$weight)
+
+# approximate that posterior!
+m4.3_20 <- quap(
+   alist(height ~ dnorm(mu, sigma),
+         mu <- a + b*(weight - xbar20),
+         a ~ dnorm(178,20),
+         b ~ dlnorm(0,1),
+         sigma ~ dunif(0,50)),
+   data = d20
+)
+
+m4.3_100 <- quap(
+   alist(height ~ dnorm(mu, sigma),
+         mu <- a + b*(weight - xbar100),
+         a ~ dnorm(178,20),
+         b ~ dlnorm(0,1),
+         sigma ~ dunif(0,50)),
+   data = d100
+)
+
+# Extract your samples - just 20 here
+post20 <- extract.samples(m4.3_20, n = 20)
+post100 <- extract.samples(m4.3_100, n = 20)
+
+# mapping to a 0 intercept for ggplot
+post20$a_map020 <- post20$a - (post20$b*(mean(d20$weight)))
+post100$a_map0100 <- post100$a - (post100$b*(mean(d100$weight)))
+
+# Plot
+plot20 <- ggplot(d20, aes(x = weight, y = height)) + 
+   geom_point(alpha = 0.6, size = 2.5, colour = "cornflowerblue") +
+   geom_abline(aes(intercept = a_map020, slope = b), data = post20, alpha = 0.5) +
+   labs(x = "Weight (kg)", y = "Height (cm)", tag = "N = 20") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+plot100 <- ggplot(d100, aes(x = weight, y = height)) + 
+   geom_point(alpha = 0.6, size = 2.5, colour = "cornflowerblue") +
+   geom_abline(aes(intercept = a_map0100, slope = b), data = post100, alpha = 0.5) +
+   labs(x = "Weight (kg)", y = "Height (cm)", tag = "N = 100") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+grid.arrange(plot20, plot100, ncol = 2)
+
+```
+
+You can see that when we update the model with an increased dataset of 100 individuals, the uncertainty goes down. We also have the phenomenon of lower uncertainty around the mean of the x and y i.e. best predictions predict average height at average weight. 
+
+## Predictions
+
+Predictions very intuitive for posterior. First, can do predictions of $\mu$ for different weights, here 50 kg:
+
+```{r pred mu, fig.height = 4, fig.width = 4}
+mu_at_50kg <- post$a + post$b*(50-xbar)
+dens(mu_at_50kg)
+```
+
+Then, we can do predictions across $\mu$ to look at *compatibility intervals*. We create a sequence of new weight values and then we can use the `link` function from `rethinking` to generate posterior for each sequence. Just plugs in our value to our definition of the linear regression between x and y, and calculates a posterior for each of them. We then take the mean and the HDPI - Highest Posterior Density Interval, or the narrowest interval containing the specified probability mass, *for all columns of the resulting matrix*.
+
+```{r pred all mu, fig.height = 5, fig.width = 5}
+weight.seq <- 30:65
+
+# sample for all values in our new sequence
+mu_allweight <- link(m4.3, data = data.frame(weight = weight.seq)) 
+
+# Now take summary stats from the posterior samples
+mu_pred <- bind_rows(apply(mu_allweight, 2, function(x){
+   mn = mean(x)
+   hpdi = HPDI(x, prob = 0.89)
+   return(tibble(mn = mn, lwr = hpdi[1], upr = hpdi[2]))
+   })) %>% 
+   mutate(weight = weight.seq)
+
+# Plot it out
+ggplot(d2, aes(x = weight, y = height)) + 
+   geom_point(alpha = 0.6, size = 2.5, colour = "cornflowerblue") +
+   geom_smooth(data = mu_pred, aes(ymax = upr, ymin = lwr, y = mn),
+               stat = "identity",fill = "blue", alpha = 0.3, colour = "black") +
+   labs(x = "Weight (kg)", y = "Height (cm)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+
+Same procedure for lots of different types of plots. Just summarising the posterior distribution for each value of our predictor variable. Having just posterior lines, having the interval boundaries is arbitrary. *Interested in shape, not boundary*. 
+
+Another thing to note is that this is just the variance in $\mu$, can also incorporate the overall variance in the population captured with $\sigma$, which can be performed with predictions from the `sim` function from `rethinking`.
+
+## Curves from lines
+
+Linear regression isn't linear. It is additive. Equation for $\mu$ which is a sum of some parameter multiplied by some observed variable. Should be additive regressions. 
+
+We don't expect linear relationships in nature. Need to extend to curves i.e. **polynomials** and **splines**. Polynomials tend to be pretty bad, used irresponsibly. Splines are highly flexible and geocentric (Goooo Simon Wood). Very useful to draw. Both of these curves are geocentric i.e. descriptive not causal or mechanistic.
+
+**Polynomial** regression - purely geocentric exercise using a polynomial of the predictor variable.
+
+1st Order - Linear $\mu_i = \alpha + \beta_1x_i$
+
+2nd Order - Quadratic (parabola) $\mu_i = \alpha + \beta_1x_i + \beta_2x^2_i$
+
+Can keep increasing order.
+
+Going to do this with the full !Kung height/weight data. So far we just used the adults. Lets fit a parabola. The definition for this model is identical as the linear one, save for the addition of the 2nd order term described above. The only thing is that x is standardised, so isn't the raw weight. Strange case with the quadratic terms because need both $\beta$'s to predict its behaviour. Awkward to simulate from and interpret. Have to plot the predictions to make sense of it. 
+
+To standardise: Subtract mean and divide by SD to give a mean of 0 and an SD of 1. **z-transformation**. This is a good habit to get into (you knew this already). Lets do this now:
+
+```{r quap weight^2}
+
+# Lets z transform weight and get the squared term
+d$weight_s <- as.numeric(scale(d$weight))
+d$weight_s2 <- d$weight_s^2
+
+# approximate that posterior!
+m4.5 <- quap(
+   alist(height ~ dnorm(mu, sigma),
+         mu <- a + b1*weight_s + b2*weight_s2,
+         a ~ dnorm(178,20),
+         b1 ~ dlnorm(0,1),
+         b2 ~ dnorm(0,1), # quadratic term has a standard normal distribution prior
+         sigma ~ dunif(0,50)),
+   data = d
+)
+
+# have a look
+precis(m4.5)
+
+```
+
+And lets also look at the curved lines. The beauty of ggplot is that we have the original weight scale there as well in the data frame, which just needs to be accounted for in our prediction data. Much much better than base R for things like this.
+
+```{r quap weight^2 lines, fig.height = 5, fig.width = 5}
+
+# Predictions using using a sequence of weights and simulations (predictions) from the posterior
+wseq <- seq(-2.2,2, length.out = 40)
+newdat <- data.frame(weight_s = wseq, weight_s2 = wseq^2)
+
+preddat <- sim(m4.5,data = newdat, n = 20)
+colnames(preddat) <- wseq
+
+predsim <- preddat %>% as_tibble() %>% 
+   mutate(sim = 1:20) %>% 
+   pivot_longer(-sim, names_to = "weight", values_to = "heightsim") %>% 
+   mutate(weight = as.numeric(weight),
+          # back-transform to the weight scale from the z-transformation
+          weight_lab = weight*sd(d$weight) + mean(d$weight))
+
+# Plot it out
+ggplot(d, aes(x = weight, y = height)) + 
+   geom_point(alpha = 0.2, size = 1.8, colour = "cornflowerblue") +
+   geom_line(data = predsim, aes(x = weight_lab, y = heightsim, group = sim),
+             alpha = 0.2) +
+   labs(x = "Weight (kg)", y = "Height (cm)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+
+These are simulated predictions of height for weight values, that incorporates both $\mu$ (and its variation), and $\sigma$, so both the mean and variation in individual and population height with respect to weight. 
+
+We could also go down this rabbit hole even further and explore higher order polynomials such as cubic terms by adjusting our joint model for $\mu_i$ to
+
+$$\mu_i = \alpha + \beta_1x_i + \beta_2x^2_i + \beta_3x^3_i$$
+
+```{r quap weight^3, echo = FALSE, fig.height = 3.5, fig.width = 3.5}
+
+### Full framework here for a linear model
+
+d$weight_s3 <- d$weight_s^3
+
+# approximate that posterior!
+m4.5_cubic <- quap(
+   alist(height ~ dnorm(mu, sigma),
+         mu <- a + b1*weight_s + b2*weight_s2 + b3*weight_s3,
+         a ~ dnorm(178,20),
+         b1 ~ dlnorm(0,1),
+         b2 ~ dnorm(0,10), 
+         b3 ~ dnorm(0,10), # cubic term has a standard normal distribution prior
+         sigma ~ dunif(0,50)),
+   data = d
+)
+
+# have a look and your estimates
+precis(m4.5_cubic)
+
+# simulated predictions from the posterior incorporating mu and sigma
+wseq <- seq(-2.2,2, length.out = 40)
+newdat <- data.frame(weight_s = wseq, weight_s2 = wseq^2, weight_s3 = wseq^3)
+
+preddat <- sim(m4.5_cubic,data = newdat)
+colnames(preddat) <- wseq
+
+predav <- preddat %>% as_tibble() %>% 
+   mutate(sim = 1:1000) %>% 
+   pivot_longer(-sim, names_to = "weight", values_to = "heightsim") %>% 
+   mutate(weight = as.numeric(weight),
+          # back-transform to the weight scale from the z-transformation
+          weight_lab = weight*sd(d$weight) + mean(d$weight)) %>% 
+   group_by(weight_lab) %>% 
+   summarise(mn = mean(heightsim), lwr = PI(heightsim, prob = 0.89)[1],
+             upr = PI(heightsim, prob = 0.89)[2])
+
+# Plot it out
+ggplot(d, aes(x = weight, y = height)) + 
+   geom_point(alpha = 0.2, size = 2.5, colour = "cornflowerblue") +
+   geom_smooth(data = predav, aes(x = weight_lab, y = mn, 
+                                  ymax = upr, ymin = lwr), 
+               stat = "identity",colour = "black", alpha = 0.2, size = 0.8) +
+   labs(x = "Weight (kg)", y = "Height (cm)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+
+Here you have the mean simulated prediction including variance in $\mu$ and $\sigma$, with the 90% percentile intervals. You see that we can just make it as wiggly as possible, just geocentric. We don't know if this is actually how weight and height are linked mechanistically. Model only gives us small world confidence, that we have to supervise.
+
+These polynomial fits are still **linear models** in that $\mu_i$ is a linear function of any single parameter. Polynomials are not good for *monotonic* relationships. Polynomials make absurd predictions outside of the range of data. All polynomial parameters are needed to understand the curve, so hard to understand. Not that flexible.
+
+## Splines
+
+Splines are metal bars from a draughter's table that could be bent with weights to allow crafty people to draw curved lines on paper in a predictable way. Still used today in trade and craft. The spline is the bar, the weights are the knots or anchors for the spline to act freely.
+
+We're going to use **B-Splines** or Basis-Splines, which are wiggly functions that are built from many local, less wiggly functions (i.e. from cubic regression or something, woop Simon Wood), these local functions are Basis functions.
+
+These splines are still geocentric, but often much better than polynomials. Bayesian B-splines are often called **P-splines** or penalised splines - Why penalty (later)?
+
+Normal linear models have the $\mu_i$ equation in which the mean of our response variable is dependent on some transformation of our predictor variable. However, Basis spline models don't directly transform our predictor variable, and instead work on a series of new synthetic variables. These synthetic variables only serve to turn a specific parameter on and off within pre-defined ranges of the predictor variable, which are determined by **Knots**.
+
+So B-splines are just linear models, but with strange synthetic variables:
+
+$$\mu_i = \alpha + w_1B_{i,1} + w_2B_{i,2} + w_3B_{i,3} + ...$$
+Where the $w$s are weights, which are like our slopes, and the $B$s are basis variables, whose value indicates the basis functions value on row $i$. Weights effect predictions within the range defined by each of the basis functions, in defined sections of the predictor variable. B-splines assign a parameter to each of these parts of the predictor variable.
+
+The synthetic variable $B$ tells you essentially tell you which knot you are closest to. In a simple example where we have linear changes between 5 knots (see book/lecture 4 on youtube), you start with only a value from basis variable 1, then as you move along our predictor variable, the effect of basis variable 2 increases, and basis variable 1 decreases. So, with overlapping basis variable values, you have the relative position. Adding to this, you have your weights, which give us the slope or strength of the basis function for each part of our predictor variable. Then, the sum of the basis variable and our weight for our particular predictor value gives us our model prediction. Because of this sum, these are also called **Additive models**.
+
+We're going to do this with some data that is more wiggly the our heights- historical data of the cherry blossom festival from Japan. This is a phenological dataset that essentially is going to map out climate change. 1200 years of monitoring from this.
+
+We want to know *how the date of the first blossom has changed over the past millennium*
+
+```{r cherry blossom look, fig.width= 7, fig.height=3}
+data("cherry_blossoms")
+precis(cherry_blossoms)
+
+# some missing data here
+ggplot(cherry_blossoms, aes(x = year, y = doy)) +
+   geom_line(colour = "deeppink") +
+   labs(x = "Year", y = "First day of\nCherry Blossom") +
+   theme_bw(base_size = 12)
+```
+
+Essentially we're going to detrend this. P-spline of the day of the first blossom: 1. Choose knots or locations for anchors, 2. Choose degree of the basis function, 3. Find posterior distribution of weights. This is still a linear regression.
+
+More knots mean more wiggle in the global function. Lots of algorithms to do this, but evenly spaced ones are often good. Year here is only used to make knots, which then determines the number of basis functions. Each basis defines the local region where it influences the spline. Lets start by defining our knots in the dataset and our basis function variables.
+
+```{r splines set up example, fig.width= 8, fig.height=3}
+library(splines)
+
+# Set up our knots
+cb <- cherry_blossoms[complete.cases(cherry_blossoms$doy),] # dealing with NAs
+n_k <- 15
+knotlist <- quantile(cb$year, probs = seq(0,1,length.out = n_k))
+
+kl_d <- tibble(knotlist, v = 1)
+
+# Create our basis functions for all knots
+B <- bs(cb$year, 
+        knots = knotlist[-c(1,n_k)],
+        degree = 3, intercept = TRUE)
+
+# Matrix with rows for each row of data, columns for the knots and value is basis value
+B[1:10,1:10]
+
+# cool plot
+as.data.frame(B) %>% 
+   mutate(year = cb$year) %>% 
+   pivot_longer(-year, names_to = "basis_function", values_to = "basis_value") %>% 
+   ggplot(aes(x = year, y = basis_value, colour = factor(basis_function, levels = paste(1:17)))) +
+   geom_line() +
+   geom_point(data = kl_d, aes(x = knotlist, y = v, colour = NULL), shape = 18) +
+   geom_vline(xintercept = 1603, size = 1, linetype = "dotted") +
+   annotate("text", x = 1590, y = 0.85, label = "The Edo\nperiod\nbegins\1603", hjust= 1, size = 2) +
+   labs(x = "Year", y = "Basis value") +
+   guides(colour = guide_legend(title = "Basis function", keyheight = 1, ncol = 2)) +
+   theme_bw(base_size = 12)
+   
+```
+
+The matrix B of the basis function has one row for every row of your dataset. Then, it has one column for each of the basis functions, which is based on the knots you specified and then something to do with the basis function degree (adds a few in for some reason). The values are the basis values for a particular row of data. A row of data can have up to **4** non-zero basis values for a degree 3 (cubic) basis function knot. 
+
+You can see the overlapping of basis functions and values demonstrated with the year 1603, the beginning of the Edo period with the Tokugawa shogunate, which saw a big revolution in Japan with strict social order, isolationism, no war and the explosion of art and culture.
+
+Now, we want to estimate the weight $w$ or slope of the variable in each of the knots $k$. This is where our **linear model** comes in for the splines.
+
+We define this model in an almost identical way to before, investigating our day of the year $D$ with its mean and variance with respect to our variable, which here is synthetic variable $B$ (which is determined by the the knots chosen):
+
+$$D_i \sim \sf{Normal}(\mu_i,\sigma)$$
+$$\mu_i = \alpha + \displaystyle\sum_{k=1}^{K} w_kB_{k,i}$$
+
+The sum is just another way to specify a linear model i.e. that we are working additively and summing up the product of our parameters (here $w$) and our variable (here $B$). Here we sum up over all of our knots $k$ for a total of $K$ knots (have 15 knot anchors so would be a long equation otherwise). And then we have our priors for the full joint model.
+
+$$\alpha \sim \sf{Normal}(100,1)$$
+$$w_k \sim \sf{Normal}(0,10)$$
+$$\sigma \sim \sf{Exponential}(1)$$
+Here we are also using an **Exponential** prior for the first time for our the sigma, or global variance parameter. This is common for scale (variance) terms which must be positive. Here we only control the rate (1 here), which controls the average deviation (inverse of the rate).
+
+Now lets use quadratic approximation to fit the model:
+
+```{r quap cherry}
+
+m4.7 <- quap(
+   alist(
+      D ~ dnorm(mu,sigma),
+      mu <- a + B %*% w,
+      a ~ dnorm(100,1),
+      w ~ dnorm(0,10),
+      sigma ~ dexp(1)),
+   data = list(D = cb$doy, B = B),
+   start = list(w = rep(0, ncol(B)))
+   )
+
+
+```
+
+Here we are using matrix multiplication of the B basis functions matrix with the weights, which just does our necessary summing over our the column/rows **and** multiplies by the weights simultaneously. We also start the approximation algorithm off telling it how many weights there are i.e. one for each basis function, and starts the algorithm off at weights of 0. 
+
+If we now extract samples of the posterior from our quadratic approximation, we can look at how the weighting parameter and basis value combine to give our overall weight for each position of each basis function.
+
+```{r basis x weight, fig.width= 8, fig.height=3 }
+
+post_doy <- extract.samples(m4.7, n = 1e4)
+w_av <- colMeans(post_doy$w)
+
+# Now can expand out the basis function data again to look at the weighted basis functions
+as.data.frame(B) %>% 
+   mutate(year = cb$year) %>% 
+   pivot_longer(-year, names_to = "basis_function", values_to = "basis_value") %>% 
+   mutate(w_av = rep(w_av, nrow(cb)),
+          wbf = w_av * basis_value) %>% # weighted basis 
+   ggplot(aes(x = year, y = wbf, colour = factor(basis_function, levels = paste(1:17)))) +
+   geom_line() +
+   geom_point(data = kl_d, aes(x = knotlist, y = 0, colour = NULL), shape = 18) +
+   labs(x = "Year", y = "Basis*Weight") +
+   guides(colour = guide_legend(title = "Basis function", keyheight = 1, ncol = 2)) +
+   theme_bw(base_size = 12)
+
+```
+
+And now finally we can pull out predictions of the model accounting for the variance of the $\mu_i$ term:
+
+```{r pred cherry blossom, fig.width= 8, fig.height=3 }
+
+cb_pred <- link(m4.7)
+PI_cb <- apply(cb_pred, 2, PI, 0.89)
+
+cb %>% 
+   mutate(mu = colMeans(cb_pred),
+          lwr = PI_cb[1,],
+          upr = PI_cb[2,]) %>% 
+   ggplot(aes(x = year, y = doy)) +
+   geom_point(alpha = 0.2, size = 1.7, colour = "deeppink") +
+   geom_smooth(stat = "identity", aes(y = mu, ymin = lwr, ymax = upr),
+               colour = "black", fill = "deeppink", alpha = 0.4, size = 0.9) +
+   labs(x = "Year", y = "First day of\nCherry Blossom") +
+   theme_bw(base_size = 12)
+   
+
+```
+
+et voila, now you have your annual predictions for the day of the cherry blossom, with uncertainty in $\mu$.
+
+***
+
+# Lecture 5 - Spurious waffles and many variables
+
+### Multiple regression, causal inference and categorical variables
+
+Causal inference look. Richard went to university in the South, where there are lots of Waffle Houses, always open. There are also lots of hurricanes in the Southern states because they are near the tropics. Waffle houses stay open even during hurricanes (usually). There is a resulting a wafflehouse index, if your local waffle house is closed, then its a really bad storm.
+
+Divorce is also higher in the Southern USA. As Waffle house density increases, as does the divorce rate. The linear regression model for this indicates a robust positive relationship. This is probably spurious of course. But this is common in nature. Correlation is commonplace, causation is not. Look at this funny [website](http://www.tylervigen.com/spurious-correlations) that presents lots of spurious correlations. 
+
+Now we'll start with multiple regression. We'll try and remove spurious correlations and try to uncover masked associations. But we can cause spurious correlation, and hide real association. Also, overfitting. 
+
+We are also going to investigate causal inference, which include **Directed Acyclic Graphs** or **DAG**s. Will learn forks, pipes, colliders and backdoor criterion (figure out whether adding a variable is warranted).
+
+## Spurious associations
+
+Why does the south have high divorce rates. Probably not waffles. It's more religious? hmmm Marriage rate increase is correlated with divorce rate. Does marriage cause divorce?
+
+Correlation doesn't imply causation, and vice versa. Things don't have to be correlated to show causation, but causation *does* imply conditional correlation. Here we need more than just models.
+
+Median age at marriage is also correlated with divorce rate. So, *which of these two variables, marriage rate, or age at marriage is more plausible from a causation perspective?*
+
+**What is the value of a predictor variable, once we know the other predictor variable**. i.e. what is the value of knowing marriage rate, once we already know median age at marriage, and vice versa. So we know the correlations, and also the **partial correlations** here. Here's the data. Lots more than just info on divorce and marriage.
+
+```{r marrdiv}
+data("WaffleDivorce")
+precis(WaffleDivorce)
+```
+
+
+## DAGs
+
+Directed Acyclic Graphs. Not mechanistic, but they are tools for causal models. Directed in that they are arrows and have a direction. Acyclic, arrows don't make loops. Graphs, with nodes and edges (like a social network graph). The directions indicate causal relationship. Not a statistical model.
+
+Picture a DAG with three nodes (actually drawn out below), $A$ for age at marriage, $M$ for marriage rate and $D$ for divorce rate. $A \rightarrow M$, 
+$A \rightarrow D$ and $M \rightarrow D$. Total cause and effect **path** is either $A \rightarrow M \rightarrow D$ or $A \rightarrow D$. All of these have plausible mechanistic explanations i.e. more younger people alive so more married can cause higher marriage rate, need to be married to be divorced, and younger people might make poor life choices.
+
+A path is a direction followed from nodes to arrows. The additional conditional association between M and D, notation $M \leftrightarrow D | A$ tells us more about the causal inference. In other words, A is a confound between M and D.
+
+### The model
+
+This is just a linear model as before, but with an extra variable. The model can be given as:
+
+$$D_i \sim \sf{Normal}(\mu_i,\sigma)$$
+$$\mu_i = \alpha + \beta_MM_i + \beta_AA_i$$
+Now the priors, and have to think a little more about this first with **prior predictive simulation**. First we z-transform all three variables. We expect $\alpha$ to be close to zero i.e. the expected value of the divorce rate when the others are at their mean. Should be near zero. The slope terms should not be very strong either, but less clear to pin down, prior predictive simulation helps with this.
+
+$$\alpha \sim \sf{Normal}(0,0.2)$$ 
+$$\beta_M \sim \sf{Normal}(0,0.5)$$
+$$\beta_A \sim \sf{Normal}(0,0.5)$$
+$$\sigma \sim \sf{Exponential}(1)$$
+
+We can actually do the prior predictive simulation using the `quap` model itself, by sampling from our prior instead of the posterior. Lets look first at this with the simpler linear model of just Age at marriage and Divorce rate. This also helps with our causal relationship testing (see later).
+
+```{r pps divorce rate, fig.height= 4, fig.width=5}
+# standardise all
+mardiv <- WaffleDivorce %>% 
+   dplyr::select(M = Marriage, A = MedianAgeMarriage, D = Divorce) %>% 
+   mutate_all(standardize)
+
+# raw data plot
+ggplot(mardiv, aes(x = A, y = D)) +
+   geom_point(alpha = 0.7, size = 5) +
+   labs(x = "Standardised median age at marriage", y = "Standardised divorce rate") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+# fit your model
+m5.1 <- quap(
+   alist(D ~ dnorm(mu, sigma),
+         mu <- a + bA*A,
+         a ~ dnorm(0,0.2),
+         bA ~ dnorm(0,0.5),
+         sigma ~ dexp(1)),
+   data = mardiv
+)
+
+# Extract your priors and link this to some new data to give you lines (following base code here)
+set.seed(10)
+prior <- extract.prior(m5.1)
+mu <- link(m5.1, post = prior, data = list(A = c(-2,2)))
+plot(NULL, xlim = c(-2,2), ylim = c(-2,2))
+for(i in 1:50){lines(c(-2,2), mu[i,])}
+
+```
+
+You can see that the relationships expected by this prior are reasonable, but even here can be a bit ridiculous. Use prior predictive simulations to test the expectations of your priors.
+
+Now for the **Multiple regression model** with $A$, $M$ and $D$ together.
+
+```{r quap mult reg mardiv, fig.height= 5, fig.width=7}
+# raw data plot first - R4All u rock hun
+
+ggplot(mardiv, aes(x = A, y = D, colour = M)) +
+   geom_point(alpha = 0.7, size = 5) +
+   labs(x = "Standardised median age at marriage", y = "Standardised divorce rate") +
+   scale_colour_gradient(low = "lightblue", high = "darkblue", 
+                         name = "Standardised\nMarriage rate") +
+   guides(colour = guide_colorbar(barheight = 7)) +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+# the model
+m5.3 <- quap(
+   alist(
+      D ~ dnorm(mu, sigma),
+      mu <- a + bM*M + bA*A,
+      a ~ dnorm(0,0.2),
+      bM ~ dnorm(0,0.5),
+      bA ~ dnorm(0,0.5),
+      sigma ~ dexp(1)),
+   data = mardiv)
+
+precis(m5.3)
+
+```
+
+You can see the coefficient for the marriage rate overlaps 0, but that the median age at marriage does seem to have a substantial negative effect on the divorce rate. Probably no direct effect of marriage rate on divorce rate, but indirect effect due to age at marriage. Still needs a deeper look. Lets look at drawing some actual DAGs for this causal relationship and testing the relative effects.
+
+First the DAGs that we sketched out earlier. Lets formalise them. We will use the `dagitty` package to plot these. Remember we want to know which of these two variables, marriage rate, or age at marriage is more plausible from a causation perspective at explaining divorce rates?
+
+```{r mardiv dagitty, fig.height= 2, fig.width=2}
+# Make your dags and set coordinates. Self explanatory
+dag_both <- dagitty("dag{A -> D; A -> M; M -> D}")
+coordinates(dag_both) <- list(x = c(A = 0, D = 1, M = 2), y = c(A = 0, D = 1, M = 0))
+dag_age <- dagitty("dag{A -> D; A -> M}")
+coordinates(dag_age) <- list(x = c(A = 0, D = 1, M = 2), y = c(A = 0, D = 1, M = 0))
+
+# Plot
+drawdag(dag_both)
+drawdag(dag_age)
+
+```
+
+Second we need the last model, which is that of just marriage rate on divorce rate.
+
+```{r mar on div, fig.height= 4, fig.width=5}
+# raw data plot
+ggplot(mardiv, aes(x = M, y = D)) +
+   geom_point(alpha = 0.7, size = 5) +
+   labs(x = "Standardised marriage rate", y = "Standardised divorce rate") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+# fit your model
+m5.2 <- quap(
+   alist(D ~ dnorm(mu, sigma),
+         mu <- a + bM*M,
+         a ~ dnorm(0,0.2),
+         bM ~ dnorm(0,0.5),
+         sigma ~ dexp(1)),
+   data = mardiv
+)
+
+```
+
+It looks like there is a positive relationship, which holds in the posterior. But now what about when we compare these competing DAGs of causal inference?? In this case we can look at the posterior distributions next to each other from all the models, thanks to the coefficient table functions `coeftab` in `rethinking`.
+
+```{r mardiv dags comp}
+plot(coeftab(m5.1, m5.2, m5.3), par = c("bA", "bM"))
+```
+
+So it looks like there isn't a direct causal effect of marriage rate. However, the main factor influencing divorce rates here is the age at marriage, which is confounding the effect observed with the marriage effects. If we want to infer causal relationships, we want to get at this stuff. But sometimes we just want to predict.
+
+## Posterior predictions on multiple regressions
+
+For viewing the posterior, there isn't a prescribed way of doing this. Depends on the model.
+
+#### Predictor residual plots
+
+These aren't often what you want to do but a good visualisation tool. Show association of each predictor with outcome, *controlling* for the other predictors. Never analyse residuals. Regress our predictor on another predictors (A and M). Compute the residuals. Regress outcome (D) on the residuals. Lets do this for age at marriage and marriage rate.
+
+```{r pred resid AM, fig.height= 4, fig.width=8}
+
+# first model
+m5.4 <- quap(
+   alist(M ~ dnorm(mu, sigma),
+         mu <- a + bAM*A,
+         a ~ dnorm(0,0.2),
+         bAM ~ dnorm(0,0.5),
+         sigma ~ dexp(1)),
+   data = mardiv
+)
+
+# get the residuals with the link mu predictions
+Mpred <- colMeans(link(m5.4))
+
+# now lets look at the residuals
+mardiv_resid <- mardiv %>% 
+   mutate(Mpred = Mpred, MA_resid = M - Mpred)
+
+# first plot
+AM_plot <- ggplot(mardiv_resid, aes(x = A, y = M)) +
+   geom_point(size = 5, alpha = 0.7, colour = "cornflowerblue") +
+   geom_line(aes(y = Mpred)) +
+   geom_segment(aes(x = A, xend = A, y = Mpred, yend = Mpred + MA_resid))+
+   labs(x = "Standardised age at marriage", y = "Standardised marriage rate") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+# second model
+m5.3_res <- quap(
+   alist(D ~ dnorm(mu, sigma),
+         mu <- a + bres*MA_resid,
+         a ~ dnorm(0,0.2),
+         bres ~ dnorm(0,0.5),
+         sigma ~ dexp(1)),
+   data = mardiv_resid
+)
+
+# predictions
+Dpred <- colMeans(link(m5.3_res))
+mardiv_resid <- mutate(mardiv_resid, Dpred = Dpred)
+
+# second plot
+Dres_plot <- ggplot(mardiv_resid, aes(x = MA_resid, y = D)) +
+   geom_point(size = 5, alpha = 0.7, colour = "cornflowerblue") +
+   geom_line(aes(y = Dpred)) +
+   labs(x = "Marriage rate residual", y = "Standardised divorce rate") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+grid.arrange(AM_plot, Dres_plot, ncol = 2)
+
+```
+
+The effect disappears when we look at the residuals i.e. when you know the age at marriage, there isn't much added benefit of knowing the marriage rate. If we flip this round and look at the residuals of age at marriage, the negative effect with divorce rate remains i.e. age at marriage is the primary driver.
+
+For observational studies like this, multiple regression allows us to get towards causal inference. In this complex world, observational studies like this allow us some statistical *control*, by controlling for confounding predictors. However, have to be cautious with inference until we know more. 
+
+#### Counterfactual plots
+
+Fix the other predictors and compute predictions across values of predictor of interest. Here we're computing for unobserved (impossible?) cases, so counterfactual. This is the simple case for doing counterfactual plots that you could implement easily. 
+
+However, to have more *control* over the causation and test it more thoroughly, we first just change the model to more explicitly include the causal structure that we have observed in our previous model i.e. that the effect of marriage rate is marginal when we know about age at marriage, but that because age at marriage also impacts the marriage rate, this could be having an additional effect on the divorce rate.
+
+So, we can update our quadratic approximation to have another regression, which has this intermediate effect of A on M. Then, for new data of A, we can look at the implications of this causal structure on our predictions of Divorce rate and this intermediate step + the effect of marriage rate on divorce rate when we account for the causal structure. So, we simulate from this double regression for new values of A, and simulate M values first and then D values second. Finally, We can then fix A at its mean of 0 (z transformed) and investigate the counterfactual effect of M of M on D.
+
+```{r counterfactual mardiv, fig.height= 4, fig.width=12}
+# The model, with two bits of regression to capture our full causal expectation
+m5.3_a <- quap(
+   alist(
+      ## A -> D <- M
+      D ~ dnorm(mu, sigma),
+      mu <- a + bM*M + bA*A,
+      a ~ dnorm(0,0.2),
+      bM ~ dnorm(0,0.5),
+      bA ~ dnorm(0,0.5),
+      sigma ~ dexp(1),
+      
+      ##  A -> M
+      M ~ dnorm(mu_M, sigma_M),
+      mu_M <- aM + bAM*A,
+      aM ~ dnorm(0,0.2),
+      bAM ~ dnorm(0,0.5),
+      sigma_M ~ dexp(1)),
+   data = mardiv)
+
+# You can see the strong negative association of A and M
+precis(m5.3_a)
+
+# Create prediction data with manipulations of A, and manipulations of M
+A_seq <- seq(-2,2,length.out = 50) # from two standard deviations below to 2 above the mean
+preddat <- data.frame(A = A_seq)
+preddat_M <- data.frame(A = 0, M = A_seq) # same sequence for M but fix A at 0
+
+# simulate from this double regression - going to simulate outcomes for both M and D, ordered
+# in this way to follow the casusal relationship of A -> M -> D
+s <- sim(m5.3_a, data = preddat, vars = c("M", "D"))
+s2 <- sim(m5.3_a, data = preddat_M, vars = "D")
+
+# Plot out our predictions
+AonM <- as.data.frame(s$M) %>% 
+   mutate(sim = 1:nrow(s$M)) %>% 
+   pivot_longer(-sim, names_to = "A_man", values_to = "M_counterf") %>% 
+   mutate(A_man = rep(A_seq, nrow(s$M))) %>% 
+   ggplot(aes(x = A_man, y = M_counterf)) +
+   geom_line(aes(group = sim), alpha = 0.01, colour = "cornflowerblue") +
+   stat_summary(fun = "mean", geom = "line", colour = "black") +
+   scale_x_continuous(expand = c(0,0)) +
+   labs(x = "Manipulated age at marraige", y = "Counterfactual marriage rate") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+AonD <- as.data.frame(s$D) %>% 
+   mutate(sim = 1:nrow(s$D)) %>% 
+   pivot_longer(-sim, names_to = "A_man", values_to = "D_counterf") %>% 
+   mutate(A_man = rep(A_seq, nrow(s$D))) %>% 
+   ggplot(aes(x = A_man, y = D_counterf)) +
+   geom_line(aes(group = sim), alpha = 0.01, colour = "cornflowerblue") +
+   stat_summary(fun = "mean", geom = "line", colour = "black") +
+   scale_x_continuous(expand = c(0,0)) +
+   labs(x = "Manipulated age at marraige", y = "Counterfactual divorce rate") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+# Manipulations of M when A is fixed
+MonD <- as.data.frame(s2) %>% 
+   mutate(sim = 1:nrow(s2)) %>% 
+   pivot_longer(-sim, names_to = "M_man", values_to = "D_counterf") %>% 
+   mutate(M_man = rep(A_seq, nrow(s2))) %>% 
+   ggplot(aes(x = M_man, y = D_counterf)) +
+   geom_line(aes(group = sim), alpha = 0.01, colour = "cornflowerblue") +
+   stat_summary(fun = "mean", geom = "line", colour = "black") +
+   scale_x_continuous(expand = c(0,0)) +
+   labs(x = "Manipulated marriage rate", y = "Counterfactual divorce rate") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+grid.arrange(AonM, AonD, MonD, ncol = 3)
+
+```
+
+So we can see that when we account for this causal structure in the data, manipulating M and fixing A at its mean reveals the weak effect of M on D.
+
+#### Posterior prediction check
+
+Compute the implied predictions from the posterior with the observed cases. This is checking the **model fit**. Finds model failures, stimulates new ideas. Here you will see states with unusual divorce rate (i.e. Idaho with the Mormons) and simulate discussion. Always average over the posterior, which can lead to overconfidence.
+
+Basically observed vs. predicted.
+```{r mardiv pred ob, fig.height= 4, fig.width=5}
+
+# posterior mean predictions
+Dpred_all <- colMeans(link(m5.3))
+
+# plot it out
+mardiv %>% 
+   mutate(Dpred = Dpred_all) %>% 
+   ggplot(aes(x = D, y = Dpred)) +
+   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+   geom_point(size = 4, alpha = 0.5, colour = "cornflowerblue") +
+   labs(x = "Observed divorce", y = "Predicted divorce") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+
+## Masked association
+
+Sometimes association between outcome and predictor masked by another variable. Need both variables to see the influence of either. When they act in opposite directions and are correlated they can mask each other. Noise in the predictors can also do this.
+
+Data to demonstrate this is milk energy and brain measure (% of neocortex). The body mass and neocortex size are correlated (allometric of course). There doesn't seem on first glance any relationship between cortex percent and milk energy.
+
+```{r milk brain}
+data(milk)
+summary(milk) # notice the NAs
+
+# standardise + remove the NAs
+m <- milk %>% 
+   filter(is.na(neocortex.perc) == F) %>% 
+   mutate(mass = log(mass)) %>% 
+   dplyr::select(milk = kcal.per.g, neo = neocortex.perc, mass) %>% 
+   mutate_all(standardize)
+
+pairs(~milk+mass+neo, data = m)
+```
+
+and now some prior predictive simulation from Richard reveals that standard priors (sd = 1, mean = 0) give us very extreme regression lines with unrealistic magnitudes of the slopes. So we reduce the sd to 0.2-0.5, which when standardised keeps us in the outcome space most of the time. Be conservative with your priors!
+
+If we model them as simple univariate linear regressions separately these are the results. I'm just presenting the figures and results here, if you want the code go to the markdown.
+
+```{r milk univar, echo = F, fig.width = 8, fig.height= 4}
+
+# neocort perc
+m5.5 <- quap(
+   alist(milk ~ dnorm(mu, sigma),
+         mu <- a + bneo*neo,
+         a ~ dnorm(0,0.2),
+         bneo ~ dnorm(0,0.5),
+         sigma ~ dexp(1)),
+   data = m
+)
+precis(m5.5)
+
+# logmass
+m5.6 <- quap(
+   alist(milk ~ dnorm(mu, sigma),
+         mu <- a + bmass*mass,
+         a ~ dnorm(0,0.2),
+         bmass ~ dnorm(0,0.5),
+         sigma ~ dexp(1)),
+   data = m
+)
+precis(m5.6)
+
+# predictions of just mu
+mu_neo <- link(m5.5, data = list(neo = seq(min(m$neo), max(m$neo), length.out = 50)))
+mu_mass <- link(m5.6, data = list(mass = seq(min(m$mass), max(m$mass), length.out = 50)))
+
+neo_uni_plot <- as.data.frame(mu_neo) %>% 
+   mutate(sim = 1:nrow(mu_neo)) %>% 
+   pivot_longer(-sim, names_to = "neo", values_to = "mu") %>% 
+   mutate(neo = rep(seq(min(m$neo), max(m$neo), 
+                        length.out = 50), nrow(mu_neo))) %>% 
+   group_by(neo) %>% 
+   summarise(mn = mean(mu), lwr = PI(mu)[1], upr = PI(mu)[2]) %>% 
+   ggplot(aes(x = neo)) +
+   geom_point(data = m, aes(y = milk), size = 5, alpha = 0.8) +
+   geom_smooth(stat = "identity", aes(y = mn, ymax = upr, ymin = lwr),
+               alpha = 0.5, colour = "black") +
+   labs(x = "Neocortex percentage (standardised)", y = "Milk Kcal per g (standardised)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+mass_uni_plot <- as.data.frame(mu_mass) %>% 
+   mutate(sim = 1:nrow(mu_mass)) %>% 
+   pivot_longer(-sim, names_to = "mass", values_to = "mu") %>% 
+   mutate(mass = rep(seq(min(m$mass), max(m$mass), 
+                        length.out = 50), nrow(mu_mass))) %>% 
+   group_by(mass) %>% 
+   summarise(mn = mean(mu), lwr = PI(mu)[1], upr = PI(mu)[2]) %>% 
+   ggplot(aes(x = mass)) +
+   geom_point(data = m, aes(y = milk), size = 5, alpha = 0.8) +
+   geom_smooth(stat = "identity", aes(y = mn, ymax = upr, ymin = lwr),
+               alpha = 0.5, colour = "black") +
+   labs(x = "Log body mass (standardised)", y = "Milk Kcal per g (standardised)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+grid.arrange(neo_uni_plot, mass_uni_plot, ncol = 2)
+
+```
+
+Now for the multiple regression model, for which we look at $N$ for neocortex, $M$ for log body mass and $K$ for milk Kcal.
+
+$$K_i \sim \sf{Normal}(\mu_i,\sigma)$$
+$$\mu_i = \alpha + \beta_NN_i + \beta_MM_i$$
+$$\alpha \sim \sf{Normal}(0,0.2)$$
+$$\beta_N \sim \sf{Normal}(0,0.5)$$
+$$\beta_M \sim \sf{Normal}(0,0.5)$$
+$$\sigma \sim \sf{Exponential}(1)$$
+
+And now for the quadratic approximation.
+
+```{r quap milk multvar}
+
+m5.7 <- quap(
+   alist(milk ~ dnorm(mu, sigma),
+         mu <- a + bneo*neo + bmass*mass,
+         a ~ dnorm(0,0.2),
+         bneo ~ dnorm(0,0.5),
+         bmass ~ dnorm(0,0.5),
+         sigma ~ dexp(1)),
+   data = m
+)
+
+precis(m5.7)
+
+```
+
+Here when they are together, neocortex is very strong positive and body mass very strong negative. If we now do counterfactuals holding the other variable at 0, we see how strong these effects are and that they were masked previously.
+
+```{r milk counterfactual, fig.width= 8, fig.height= 4}
+
+# counterfactual preddat
+pdat_neo <- data.frame(neo = seq(min(m$neo), max(m$neo),length.out = 50),
+                       mass = 0)
+pdat_mass <- data.frame(mass = seq(min(m$mass), max(m$mass),length.out = 50),
+                       neo = 0)
+
+# link to get the mu predictions
+mu_neo <- link(m5.7,data = pdat_neo)
+mu_mass <- link(m5.7, data = pdat_mass)
+
+# Now can do counterfactual plots holding the other at 0
+neo_countf <- as.data.frame(mu_neo) %>% 
+   mutate(sim = 1:nrow(mu_neo)) %>% 
+   pivot_longer(-sim, names_to = "neo", values_to = "mu") %>% 
+   mutate(neo = rep(seq(min(m$neo), max(m$neo), 
+                        length.out = 50), nrow(mu_neo))) %>% 
+   group_by(neo) %>% 
+   summarise(mn = mean(mu), lwr = PI(mu)[1], upr = PI(mu)[2]) %>% 
+   ggplot(aes(x = neo)) +
+   geom_smooth(stat = "identity", aes(y = mn, ymax = upr, ymin = lwr),
+               alpha = 0.5, colour = "black") +
+   labs(x = "Neocortex percentage (standardised)", 
+        y = "Milk Kcal per g (standardised)",
+        title = "Holding body mass at 0") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+mass_countf <- as.data.frame(mu_mass) %>% 
+   mutate(sim = 1:nrow(mu_mass)) %>% 
+   pivot_longer(-sim, names_to = "mass", values_to = "mu") %>% 
+   mutate(mass = rep(seq(min(m$mass), max(m$mass), 
+                        length.out = 50), nrow(mu_mass))) %>% 
+   group_by(mass) %>% 
+   summarise(mn = mean(mu), lwr = PI(mu)[1], upr = PI(mu)[2]) %>% 
+   ggplot(aes(x = mass)) +
+   geom_smooth(stat = "identity", aes(y = mn, ymax = upr, ymin = lwr),
+               alpha = 0.5, colour = "black") +
+   labs(x = "Log body mass (standardised)", 
+        y = "Milk Kcal per g (standardised)",
+        title = "Holding neocortex percentage at 0") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+grid.arrange(neo_countf, mass_countf, ncol = 2)
+
+```
+
+So in this example, because body mass is correlated with neocortex percentage the effect is masked. Bigger primates have bigger brains, bigger brains need more energy. But bigger bodies need less milk energy because they have longer developmental times. Tradeoff between lifespan and learning. 
+
+### Syntheic masked association
+
+If we think about this in a DAG causal way again, when we have this correlation between one thing and another and then a masking, it is likely that there is actually an unobserved variable (here can be $U$), a common cause of body mass and neocortex, life-history tradeoff. Then each mass and neocortex can have different effects. If we could measure $U$ then we should regress on that. In DAG form.
+
+
+```{r DAG milk, fig.width= 3, fig.height= 2}
+# Make your dags and set coordinates. Self explanatory
+dag_milk <- dagitty("dag{neo <- U -> mass; neo -> milk; mass -> milk}")
+coordinates(dag_milk) <- list(x = c(neo = 0, milk = 1, U = 1, mass = 2), 
+                              y = c(neo = 0, U = 0, milk = 1, mass = 0))
+drawdag(dag_milk)
+```
+
+## Categorical variables
+
+Many variables we encounter in the real world are in discrete, unordered categories i.e. gender, region, species, site etc. etc. etc. There are two ways we can use these in a Bayesian regression:
+
+1. Use dummy/indicator variables
+2. Use index variables
+
+Most automated approaches to this use the dummy variable approach, but it's usually easier to think and code with index variables. Better to do this.
+
+Dummy variables we use 1 for one category and 0 for the other. In a linear regression it is **identical**, but just turns the variable on (1) and off (0), the coefficient is therefore the difference in their intercept, or their mean mu. However, you can see the issue when we include more and more categories, we need more and more dummy variables, for $k$ categories you need $k-1$ dummy variables. **And** you have to set the priors for all of them. This is also an issue because in the dummy variable approach, you are more certain about the 0 category. The 1 variable has two parameters ($\beta$ as well as alpha), but the 0 category does not. So the two categories have different levels of certainty in the model.
+
+### Index variables
+
+This is equivalent but a better alternative that makes things much easier for coding. Foundational for multi-level models and scales up to lots of categories easily. Instead of a dummy with 0 or 1 that makes the model look at only differences in intercept because of a 0 in there, we code the variable as a numeric index (1, 2, 3.....) and the explicitly state in the model that we are going to explore **differences in intercept**. If we return to the !Kung height example, we also have a `$sex` column. So our variable would look like this :
+
+```{r index var sex}
+d$sex <- ifelse(d$male == 1, 2, 1)
+str(d$sex)
+```
+
+And our (simple, unscaled etc.) model would look like this:
+
+$$h_i \sim \sf{Normal}(\mu_i,\sigma_i)$$
+$$\mu_i = \alpha_{\sf{sex[i]}}$$
+$$\alpha_j \sim {\sf Normal(178,20)} \, {\sf for}\, j = 1..2$$
+$$\sigma \sim {\sf Uniform(0,50)}$$
+Which would be coded as follows with bracket notation:
+
+```{r quap sex category}
+m5.8 <- quap(
+   alist(height ~ dnorm(mu, sigma),
+         mu <- a[sex],
+         a[sex] ~ dnorm(178, 20),
+         sigma ~ dunif(0,50)),
+   data = d
+)
+
+# have to go depth two because they are levels of the alpha parameter
+precis(m5.8, depth = 2)
+```
+
+Which gives you intercepts for each of your sexes and their posterior intervals. You get a vector of $\alpha$s. The slightly more awkward bit is to make inferences from this. Say we want to see the difference between females and males say. Actually, we can easily just compare these intercepts from the posterior.
+
+```{r sex diff}
+post <- extract.samples(m5.8)
+# your samples of the posterior are levelled, hence going inside post$a
+post$fmdiff <- post$a[,1] - post$a[,2]
+
+precis(post)
+```
+
+This is then very easy to scale up to have multiple categories, which we can now test on the primate milk data. Lets ask if different clades in the dataset have different milk calorie levels. There are four of these: Strepsirrhine, New World Monkey, Old World Monkey and Ape.
+
+$$milk_i \sim \sf{Normal}(\mu_i,\sigma_i)$$
+$$\mu_i = \alpha_{\sf{clade[i]}}$$
+$$\alpha_j \sim {\sf Normal(0,0.5)} \, {\sf for}\, j = 1..4$$
+$$\sigma \sim {\sf Exponential(1)}$$
+
+for which the R code would be
+
+```{r clade diff, fig.wdth = 5, fig.height= 3}
+# Standardising and setting clade to an integer
+m2 <- milk %>% 
+   mutate(milk = scale(kcal.per.g),
+          clade_id = as.integer(clade)) %>% 
+   dplyr::select(milk, clade, clade_id)
+
+m5.9 <- quap(
+   alist(
+      milk ~ dnorm(mu, sigma),
+      mu <- a[clade_id],
+      a[clade_id] ~ dnorm(0, 0.5),
+      sigma ~ dexp(1)
+   ),
+   data = m2
+)
+
+plot(precis(m5.9, depth = 2, pars = "a"), labels = levels(m2$clade), xlab = "Posterior milk calorie level (Kcal per g)")
+
+```
+
+# Lecture 6 - The Haunted DAG & the Causal Terror
+
+### Multicollinearity, post-treatment bias and collider bias.
+
+Seems to be a negative correlation between surprising things and true things. Newsworthy studies are often untrustworthy. Best science is probably boring. PNAS - Female hurricanes are deadlier than male hurricanes based on the alternating male and female names. If you do a bad regression, female hurricanes are indeed more deadly, based on the idea that people don't take female names as seriously. It got a lot of press however.
+
+Why aren't surprising things true? Mono lake in US with lots of arsenic. But stuff lives there. Dr. Felisa Wolfe-Simon did a study at this lake and found bacteria that used arsenic to build their DNA. Life with low phosphate?? NASA loved this. This probably not correct after lots of studies. Here we're going to explore the pitfalls of multiple regression, looking at how having multiple predictor variables can be problematic.
+
+## Multicollinearity
+
+This is when there is a strong association between two or more of your predictor variables. What this can do is mask your overall effect on your response variable - because if you remember the key question you're addressing in multiple regression is - *What is the value of adding one predictor variable, once we know the other predictor variable*. If they are strongly associated with each other, then this can cancel out the overall effect on the predictor, because of course there isn't any value in adding them in if they're already (pretty much) in the model.
+
+Let's demonstrate this with the milk data again. Now we are going to look at how both the percentage of fat and the percentage of lactose in the milk determine its calorie level. We start with two bivariate (univariate) models each looking at how lactose and fat percentage influence the Kcal level of the milk.
+
+```{r milk multcolin univar}
+m <- milk %>% 
+   dplyr::select(milk = kcal.per.g, fat = perc.fat, lact = perc.lactose) %>% 
+   mutate_all(standardize)
+
+# fat percentage on milk calorie level
+m6.3 <- quap(
+   alist(
+      milk ~ dnorm(mu, sigma),
+      mu <- a + bf*fat,
+      a ~ dnorm(0,0.2),
+      bf ~ dnorm(0,0.5),
+      sigma ~ dexp(1)
+   ),
+   data = m
+)
+
+# lactose percentage on milk calorie level
+m6.4 <- quap(
+   alist(
+      milk ~ dnorm(mu, sigma),
+      mu <- a + bl*lact,
+      a ~ dnorm(0,0.2),
+      bl ~ dnorm(0,0.5),
+      sigma ~ dexp(1)
+   ),
+   data = m
+)
+
+# Have a look at the coefficients
+precis(m6.3)
+precis(m6.4)
+
+```
+We can see that both exert strong effects on the milk calorie level i.e. as the fat level increases, there are strong increases in the calories of the milk, and conversely with increases in lactose there are strong decreases in the milk calories. However, lets see what happens to the posterior distributions of the fat and lactose levels when we do a multiple regression:
+
+```{r milk multcolin, fig.wdth = 7, fig.height= 3}
+
+# multivariate model of milk calorie level
+m6.5 <- quap(
+   alist(
+      milk ~ dnorm(mu, sigma),
+      mu <- a + bf*fat + bl*lact,
+      a ~ dnorm(0,0.2),
+      bf ~ dnorm(0,0.5),
+      bl ~ dnorm(0,0.5),
+      sigma ~ dexp(1)
+   ),
+   data = m
+)
+
+# Have a look at the coefficients
+extract.samples(m6.5) %>% 
+   mutate(sim = 1:n()) %>% 
+   dplyr::select(sim, fat = bf, lactose = bl) %>% 
+   pivot_longer(-sim, names_to = "variable", values_to = "posterior.mean") %>% 
+   ggplot(aes(x = posterior.mean, fill = variable)) +
+   geom_density(alpha = 0.5, size = 0.1) +
+   geom_vline(xintercept = 0) +
+   labs(x = "Posterior mean", y = "Density") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+Here, the posterior mean of the fat effect has dropped considerably, and also the spread of both of the posteriors means for the coefficients is much much wider than before, where they were really narrow and strong.
+
+Fat and Lactose level contain much of the same information, so the posterior ends up including a lot of combinations of their coefficients that are plausible for explaining the milk calorie level. Hence the uncertainty goes up and the means change (closer to zero). These two variables are virtually redundant. Infact, this probably follows the same kind of unidentified, unifying tradeoff between these two variables. I.e. there is probably a physiological reason why you can't have both high fat AND high lactose. Very very important to investigate these kinds of things before you fit models. R4All to the rescue again. Plot your data out!!!
+
+## DAGs confounds
+
+### Selection-distortion effect
+
+Just with peer review that is selecting papers based on their newsworthyness OR their trustworthyness. Both matter but if these are not correlated with each other i.e. **journals aren't selecting based on both**, then just the selection will then lead to a negative correlation between newsworthyness and trustworthyness.
+
+This happens in multiple regression, Berksons paradox, when we create subpopulations and piece up our regressions, we can create spurious correlations. Regression as a wicked oracle. Automatically focuses on the most informative cases. Answers the question posed to it but very very literally.
+
+Regression is sometimes thought of and practised by **just adding everything** to make big causal salad where lots of things affect everything (sadly you've seen this a lot). This is bad as adding these variables can generate spurious relationships. Throwing the kitchen sink at it and just adding everything. Need to know these confounds and how the variables relate to each other.
+
+There are only four types of confounds based on a DAGs view of a causal model.
+
+1. The fork
+2. The pipe
+3. The collider
+4. The descendant
+
+### The Confounding Fork
+
+```{r DAG fork, fig.width= 3, fig.height= 0.7, echo = F}
+dag_fork <- dagitty("dag{X <- Z -> Y}")
+coordinates(dag_fork) <- list(x = c(X = 0, Z = 1, Y = 2), 
+                              y = c(X = 0, Z = 0, Y = 0))
+drawdag(dag_fork)
+```
+
+Here, Z is a common cause of both X and Y. X and Y also have a confounded relationship with each other. This is like the age at marriage being a common cause for both marriage and divorce rate in the previous example. De-confounding this is easy, conditioning on Z removes the dependency between X and Y. This shuts the path between X and Y, and puts it to the common cause instead. $X \_ | |\_\, Y\, |\, Z$ i.e. X is independent with Y conditional on Z.
+
+### The Perplexing Pipe
+
+```{r DAG pipe, fig.width= 3, fig.height= 0.7, echo = F}
+dag_pipe <- dagitty("dag{X -> Z -> Y}")
+coordinates(dag_pipe) <- list(x = c(X = 0, Z = 1, Y = 2), 
+                              y = c(X = 0, Z = 0, Y = 0))
+drawdag(dag_pipe)
+```
+
+Here X causes Z which causes Y. I.e. Z mediates the association between X and Y. Here again,  $X \_ | |\_\, Y\, |\, Z$ and conditioning on Z removes the dependency between X and Y. This is a **mediation variable**. Might want to test for this dependency itself, to get the initial cause X. With data alone you can't see the difference between the pipe and the fork. This confounds when we ignore it.
+
+A pipe example. Which results in:
+
+## Post-treatment bias
+
+This confound occurs when we ignore the pipe. **Controlling for the downstream consequence of the treatment knocks out the effect of the treatment statistically**. Post-treatments mean they come after the original treatment (downstream).
+
+Lets think about this with a hypothetical example where you want to find out the effect of a fungal soil treatment on plant growth. We know, the plant height at time t = 1, the plant height at time t = 0, whether or not the plant had fungus on it, and the fungal treatment applied. The DAG for this would look something like this:
+
+```{r DAG fungus, fig.width= 4, fig.height= 3, echo = F}
+dag_fung <- dagitty("dag{Height0 -> Height1;
+                    Treatment -> Fungus -> Height1}")
+coordinates(dag_fung) <- list(x = c(Height0 = -1, Height1 = 1, Fungus = 2, Treatment = 3), 
+                              y = c(Height0 = 0, Height1 = 2, Fungus = 1, Treatment = 0))
+drawdag(dag_fung)
+```
+
+Lets generate some data for this task
+
+```{r fungus data gen}
+set.seed(71)
+
+# number of plants
+N <- 100
+
+# simulate initial heights
+h0 <- rnorm(N,10,2)
+
+# assign treatments and simulate growth
+treatment <- rep(0:1, each = N/2)
+fungus <- rbinom(N, size = 1, prob = 0.5 - treatment*0.4)
+h1 <- h0 + rnorm(N, 5 - 3*fungus)
+
+fung <- data.frame(h0, h1, treatment, fungus)
+```
+
+And for the model. Here, we have a growth model, where the height of the plant at time 1 is actually dependent on its height at time 0, and some growth rate, $p$.
+
+$$h_{1,i} \sim {\sf Normal}(\mu_i,\sigma)$$
+$$\mu_i = h_{0,i}p$$
+Where $p$ is a proportional change, or per-capita growth rate. This growth rate is dependent on our treatments and fungus growth in our statistical model. Because $p$ is a proportional change, we expect it (its intercept, or 0 value) to follow a Log-normal distribution as before, because it is bound by 0 (can't have a negative proportional change). So our full joint model with priors is:
+
+$$h_{1,i} \sim {\sf Normal}(\mu_i,\sigma)$$
+$$\mu_i = h_{0,i}p$$
+$$p = \alpha + \beta_TT_i + \beta_FF_i$$
+$$\alpha \sim {\sf LogNormal}(0,0.25)$$
+$$\beta_T \sim {\sf Normal}(0,0.5)$$
+$$\beta_F \sim {\sf Normal}(0,0.5)$$
+$$\sigma \sim {\sf Exponential}(1)$$
+And the quadratic approximation of the posterior.
+
+```{r fungus quap}
+m6.7 <- quap(
+   alist(h1 ~ dnorm(mu, sigma),
+   mu <- h0*p,
+   p <- a + bT*treatment + bF*fungus,
+   a ~ dlnorm(0,0.25),
+   bT ~ dnorm(0,0.5),
+   bF ~ dnorm(0,0.5),
+   sigma ~ dexp(1)),
+   data = fung
+)
+
+precis(m6.7)
+```
+
+So our parameter a has a posterior mean of 1.48, indicating roughly a 40-50% population growth rate. Here we can see that growth is not associated with treatment, but fungus is. However, here is where our **post-treatment** bias comes in. Fungus presence is mainly a consequence of the treatment i.e. it is a post-treatment variable. The model is naive and just answering the question *once we know about fungus growth, what additional benefit is adding in treatment?*. Here that is very little. If we remove the fungus variable (see book), the effect of treatment is clearly positive.
+
+Controversial topic - wage gap. If we control for hours worked and job choice, there isn't a clear (although still a moderate) difference between men and women in terms of income. HOWEVER, hours worked and job choice are post-treatment biases here i.e. being a woman and all that entails means that you are more likely to go into certain sectors. So, gender is still causally linked with income differences, but because of post-treatment biases, we don't necessarily see that. Things that are downstream of others. The causal diagram makes this much easier.
+
+## Collider Bias
+
+```{r DAG collider, fig.width= 3, fig.height= 0.7, echo = F}
+dag_collider <- dagitty("dag{X -> Z <- Y}")
+coordinates(dag_collider) <- list(x = c(X = 0, Z = 1, Y = 2), 
+                              y = c(X = 0, Z = 0, Y = 0))
+drawdag(dag_collider)
+```
+
+Here, X and Y jointly cause Z i.e. it is a collider of X and Y. X and Y are independent, but if you condition on Z it creates a statistical dependency between X and Y. Learning X and Z reveals Y. This is the newsworthy trustworthy example. These predictors are independent (are they?). However, Conditional on selection for publication, they become associated. Hardest conceptually, but very common and need to know them. Conditioning on a collider is like selecting on a subpopulation.
+
+Lightbulb example. Light needs both a switch and electricity to produce light. So if X is our switch and it is on, but the light is off, we know that the electricity is off. The switch and the electricity are independent (you know this when your fuse goes), but associated because of their joint role in determining light i.e. **they are conditioned on their collider (light)**. This is the finding out effect. 
+
+```{r DAG pub, fig.width= 3, fig.height= 1, echo = F}
+dag_pub <- dagitty("dag{Newsworthy -> Published <- Trustworthy}")
+coordinates(dag_pub) <- list(x = c(Newsworthy = 0, Published = 1, Trustworthy = 2), 
+                              y = c(Newsworthy = 0, Published = 1, Trustworthy = 0))
+drawdag(dag_pub)
+```
+
+> The collider bias in science - if you know that a study isn't very **trustworthy**, but it got **published** in nature, then you are pretty confident that it must've been **newsworthy**
+
+Are taller people better at basketball? Conditional on being in the NBA already there isn't a correlation between being taller and your average points per game. This can also be called *post-selection* bias. Conditional on some selection i.e. publication, light, NBA player, there is a bias.
+
+Example - simulations. Are older people less happy? Should we control for marriage status? This is a little agent based model that Richard has written. This is basically: individuals born and given a static happiness variable, then they age, once they reach 18, each year after they can get married (which has a probability based on their happiness).
+
+```{r marriage happiness abm}
+sim_happiness
+happ <- sim_happiness(seed = 1977, N_years = 1000) %>% 
+   mutate(married_id = if_else(married == 1, 2, 1))
+precis(happ)
+```
+Age and happiness are completely independent, but do they associate with each other in this example.
+
+Going to run a categorical regression on this.
+
+```{r marriage happiness quap}
+m6.9 <- quap(
+   alist(happiness ~ dnorm(mu, sigma),
+         mu <- a[married_id] + bA*age, # looking for an intercept/mean difference based on married ID
+         a[married_id] ~ dnorm(0,1),
+         bA ~ dnorm(0,2),
+         sigma ~ dexp(1)),
+   data = happ)
+precis(m6.9, depth = 2)
+```
+Even though in the simulation happiness has nothing to do with age, conditioning on marriage, there is a negative association between age and happiness. This is because age is highly correlated with marriage, so the added information that age gives when we already know marriage status indicates happiness does go down with age, because we're looking at separate sub-populations of married and un-married. Marriage status is a common consequence of age and happiness. We've allowed information to flow between age and happiness even though they are unrelated. This is a collider trick.
+
+But in real situations, how do we know that this collider bias isn't real? Need things external to the data.
+
+## The Haunted DAG
+
+Unmeasured variables can also create colliders. Example: The influence of grandparents (G) and parents (P) on the education of their children (C). Big topic in human evolution.
+
+```{r DAG grandparents, fig.width= 3, fig.height= 2, echo = F}
+dag_gp <- dagitty("dag{G -> P; G -> C; P -> C}")
+coordinates(dag_gp) <- list(x = c(G = 0, P = 1, C = 1), 
+                              y = c(G = 0, P = 0, C = 2))
+drawdag(dag_gp)
+```
+
+Outcome is eductaional outcome. All three of these arrows are possible, Grandparents can have both a direct and indirect effects on the childs education. Often in the literature you find a negative effect of grandparents. Could be that P is the collider i.e. that some unobserved variable (U) shared between P and C but not with G, like a neighbourhood effect for the parents house for example. So, once we condition on parents, there is a collider bias. P is a common consequence of both U and G, thus influencing our effect of interest of G on C.
+
+```{r DAG grandparents U, fig.width= 3, fig.height= 2, echo = F}
+dag_gpu <- dagitty("dag{G -> P; G -> C; P -> C; U -> P; U -> C
+                   U [unobserved]}")
+coordinates(dag_gpu) <- list(x = c(G = 0, P = 1, C = 1, U = 2), 
+                              y = c(G = 0, P = 0, C = 2, U = 1))
+drawdag(dag_gpu)
+```
+
+Consider two parents in the 50th percentile of education. One of these parents came from a highly educated grand parent, the other from a poorly educated grandparent. The only probable way that these parents have the same education level is that they live in different neighbourhoods. This neighbourhood difference also impacts the child though. So, the one with the highly educated grandparent must've been from the worse neighbourhood, so the child has lower education i.e. negative correlation between G and C.
+
+### The back-door criterion
+
+So how can we go about accounting for these confounds, and what ties all of these examples together. The answer is the **back-door criterion**. In all of our examples here, we have opened an alternate causal path between our predictor of interest and our outcome. In the grandparent example above, we opened a path through the collider P and the unobserved variable to get from G to C as well as the direct route. In the **fork** example with marriage, because there was a common cause for both marriage and divorce rate by the age at marriage, we create a path between marriage and divorce because age is a common cause. In the **pipe** example with a post-treatment bias, the direct path between the treatment (anti-fungus) and outcome (growth) gets a backdoor through the post-treatment variable.
+
+> The goal of causal inference is to **shut the back door** paths.
+
+### The Descendant
+
+We have one final type of confound, called **the descendant**. This is where we have a descendant variable that we are measuring. Here Z is still our collider between X and Y, creating a spurious association between X and Y. However, we now have an additional variable A, which acts as Z. A is the outcome of Z. This is very common in cases where we are working with a proxy variable. The X and Y still will have a spurious association, but by there connection to the often unobserved value of Z.
+
+```{r DAG descendant, fig.width= 2.5, fig.height= 1, echo = F}
+dag_desc <- dagitty("dag{X -> Z <- Y; Z -> A}")
+coordinates(dag_desc) <- list(x = c(X = 0, Z = 1, Y = 2, A = 1), 
+                              y = c(X = 2, Z = 0, Y = 2, A = 2))
+drawdag(dag_desc)
+```
+
+## How to shut the back door
+
+1. The Fork - Path open unless you condition on Z 
+```{r DAG fork shut, fig.width= 3, fig.height= 0.7, echo = F}
+drawdag(dag_fork)
+```
+2. The Pipe - Path open unless you condition on Z - but now we often want that path open.
+```{r DAG pipe shut, fig.width= 3, fig.height= 0.7, echo = F}
+drawdag(dag_pipe)
+```
+3. The Collider - Closed until you condition on Z, so leave it alone unless you want that backdoor
+```{r DAG collider shut, fig.width= 3, fig.height= 1, echo = F}
+drawdag(dag_collider)
+```
+4. The Descendant - Conditioning on A is like Z. So closed until you condition on Z
+```{r DAG desc shut, fig.width= 3, fig.height= 0.7, echo = F}
+drawdag(dag_desc)
+```
+
+More on this in the next lecture.
+
+# Lecture 7 - Back-door Paths & Ulysses' Compass
+
+### Back-door paths, Overfitting, and Model Accuracy
+
+Causal inference is an unsolved problem. However, if we assume a DAG is true, we can make powerful discoveries. We saw in the last lecture how confounds can both block or create spurious associations depending on the situation. Because there are only 3 ways variables can meet, and then we can condition on them, there are specific ways that we can shut the back door and make powerful findings. 
+
+These three ways are the **fork**, **pipe** and **collider** (the **descendant** lurks in all).
+
+1. Fork - Close the backdoor by conditioning on Z
+2. Pipe - Open/Close the backdoor by conditioning on Z, but X causes Z which causes Y
+3. Collider - Close the backdoor by **not conditioning** on Z, opens otherwise
+
+## Back-door path examples
+
+In the DAG, the causal associations are denoted with Arrows, but the information flow can go in anyway. This is the problem. So, we want to block information flow by conditioning or not on variables that enter through the back door. We want to know the direction of the arrows. The backdoors make this hard.
+
+#### Education and Wages
+
+E and W with confounds U (unobserved - neighbourhood, family etc. etc.). So two paths from E to W, one direct, one through U.
+
+```{r DAG EW, fig.width= 2.5, fig.height= 1, echo = F}
+dag_ew <- dagitty("dag{E -> W; U -> E; U -> W}")
+coordinates(dag_ew) <- list(x = c(E = 0, U = 1, W = 2), 
+                              y = c(E = 2, U = 0, W = 2))
+drawdag(dag_ew)
+```
+
+To close the second path through U, we need to condition on it. This is the fork. If we want to see the true effect of Education on Wages, we have to condition on our unknowns.
+
+#### Grandparent effects
+
+Does grandparents education level G affect childs education level C, with information of the parents education level.
+
+```{r dag gpu close, fig.width= 3, fig.height= 2, echo = F}
+drawdag(dag_gpu)
+```
+
+Now there are three paths: $G \rightarrow C$, $G \rightarrow P \rightarrow C$ and $G \rightarrow P \leftarrow U \rightarrow C$. 
+
+Here conditioning on P closes path 2 but opens path 3. Here we're ruined one way or the other. No way to get valid causal inference, unless we can get a handle on U.
+
+#### A more interesting example
+
+```{r dag XUABCY, fig.width= 3, fig.height= 2, echo = F}
+dag_int <- dagitty("dag{X -> Y; U -> X; U -> B; A -> U;
+                  A -> C; C -> B; C -> Y}")
+coordinates(dag_int) <- list(x = c(X = 0, U = 0, A = 1, B = 1, C = 2, Y = 2), 
+                              y = c(X = 3, U = 1, A = 0, B = 2, C = 1, Y = 3))
+drawdag(dag_int)
+```
+
+Here there are three information paths from X to Y, which we want to estimate:
+
+1. $X \rightarrow Y$
+2. $X \leftarrow U \leftarrow A \rightarrow C \rightarrow Y$
+2. $X \leftarrow U \rightarrow B \leftarrow C \rightarrow Y$
+
+B in this example is a collider between C and U, therefore conditioning on B would open the path via B. So, if we want to find the causal link between X and Y, we can condition on either A or C, which shuts the AUC fork, and the ACY pipe. U is unobserved so can't condition on it. In this example, if it had been measured then conditioning on it would also be good.
+
+Causal inference only works hand in hand with a robust estimation system too. Have to also understand what the data means, its error etc. this causes **residual confounds**.
+
+#### Waffle Houses
+
+```{r dag waffle, fig.width= 3.5, fig.height= 2, echo = F}
+dag_waffle <- dagitty("dag{Waffle.Houses -> Divorce; South -> Waffle.Houses;
+                      South -> Marriage; Marriage -> Divorce;
+                      South -> Age.at.marriage; Age.at.marriage -> Marriage;
+                      Age.at.marriage -> Divorce}")
+coordinates(dag_waffle) <- list(x = c(Waffle.Houses = 2, South = 0, Marriage = 1, Divorce = 2, Age.at.marriage = 0), 
+                              y = c(Waffle.Houses = 0, South = 0, Marriage = 1, Divorce = 2, Age.at.marriage = 2))
+drawdag(dag_waffle)
+```
+
+We want to see if there is a causal link between the number of Waffle Houses (W) and the Divorce Rate (D). For this there are the following information paths:
+
+1. $W \rightarrow D$
+2. $W \leftarrow S \rightarrow A \rightarrow D$
+3. $W \leftarrow S \rightarrow M \rightarrow D$
+4. $W \leftarrow S \rightarrow A \rightarrow M \rightarrow D$
+5. $W \leftarrow S \rightarrow M \leftarrow A \rightarrow D$
+
+In this case, marriage is a collider between being in the south and age at marriage. The South is a big fork for all the others. The other paths are pipes. So, if we want to get a causal understanding of the effect of Waffle Houses on Divorce, we need to block all those backdoor paths.
+
+This can be done by just conditioning on S, since S is the big fork affecting everything else. We could also do this by blocking A **and** M at the same time. Conditioning on M opens the path through the collider, however jointly conditioning on A blocks the pipe from S to D whilst also blocking paths through M. So after conditioning on both of these, we would see the effect of just S through W to D i.e. is there any additional info adding W when we know S, which is the same as when we just condition for S.
+
+## Conditional Independencies and Adjustment Sets
+ 
+Dagitty can give you the tests on your DAG. You do this by testing the **implied conditional independencies**. These tell you that two variables are independent of each other ($X\_ | |\_ Y$) once we condition on some other variable ($|\, Z$). Then, using the data and our golems, we test these conditional independencies.
+
+```{r cond ind}
+impliedConditionalIndependencies(dag_waffle)
+```
+
+We can ask our DAG what we need to condition on in order to test the causal association between an exposure (treatment, predictor, independent variable etc.) and an outcome (response, dependent variable etc.). We do this with **adjustment sets**.
+
+```{r adj sets}
+adjustmentSets(dag_waffle, exposure = "Waffle.Houses", outcome = "Divorce")
+```
+
+Causal inference is hard but possible. David Hulme did the most to sort out causal inference. He said correlation is not enough. Now we have DAGs and can test conditional independencies. Experiments aren't always required then, because we can condition on things. This is good news. By making a DAG, we can see whether we are *capable* of a making a causal inference about our question.
+
+There is more than the back-door, things called the **front door criterion** (use the existence of a mediator to remove a confound between exposure and outcome) and **instrumental variables**, both of which exploit the covariance structure.
+
+## Not all about DAGs
+
+DAGs are heuristic models. Remember that DAGs are small world constructs, don't get cocky. There are also **residual confounds** that can affect the causal inference:
+
+* Misclassification
+* Measurement error
+* Missingness
+
+DAGs can accommodate these things, but might give us no solutions.
+
+Eventually we need *"real"* models of the system. This is real mathematical models based on laws and theory that actually have causal implications built in. This is physics essentially. We aren't in this world because we have very few laws, need to look at associations still.
+
+## Ulysses' compass
+
+Copernicus (Kopernik) was an astronomer and a lawyer and blasphemer. He is famous for his heliocentric model of the solar system with the sun being at the centre, rather than the Ptolemaic model with the earth at the centre. However, the Copernican model wasn't very good. Still relied on these fourier epicycles to estimate circles within circles and used *circular* orbits. Only until Kepler did we know that orbits were elliptical.
+
+Was an equivalent model in terms of predictions, as there was only the same data with how the stars moved across the sky. The only difference was the sun being at the centre. It *is* an achievement.
+
+The best difference is that the Copernican model needs fewer circles (epicycles of motion) to make the same predictions though i.e. it is more *parsimonious* or more *simple*.
+
+> Okham's Razor - *Numquam ponenda est pluralitas sine neceeitate.* or Pluarlity should never be posited without necessity. OR the simple, parsimonious way is best.
+
+We need something more substantial to apply this hueristic thinking to real models. Trade offs between complexity and accuracy. We don't often have the Copernican case where we have a model that fits the same. Usually, we have a more complex model that fits the data better. Or less complex and fit worse. Trade off between these.
+
+So for Okham's razor, we prefer simplicity but also need accuracy, right? How much loss of accuracy should we tolerate.
+
+Here **Ulysses** comes in as a metaphor.
+
+In greek mythology - A hero of Homer's Odyssey. Had to navigate a narrow straight, during which he had a choice of two hazards when voyaging. Either a giant whirlpool *Charybdis* that sucks in ships at sea or a many headed monster *Scylla* that gobbles up sailors on the cliffs. This is the metaphor for complexity vs. accuracy.
+
+> The many-headed beast of **overfitting** vs. the whirlpool of **underfitting**
+
+This dichotomy is the problem with parameters. If you add a parameter to a model, it will often fit better (generally - not for multilevel models). Can't use fit-to-sample to tell you anything useful. Models with too many parameters fit better but predict worse. Models too simple don't learn enough from the data. We want a model that navigates these two hazards successful. *Coundfound* is a third beast, can also lead to better fit than models that are causally correct.
+
+We're going to introduce *regularisation* to expect overfitting and guard against it.
+
+We will cope with overfitting with **Cross-validation** and **information criteria**:
+
+* Estimate predictive accuracy
+* Estimate overfitting risk
+* Understand how overfitting relates to complexity
+* Indentify influential observations
+
+Dont solve overfitting but measure it. Also, need to understand that prediction and causal inference are different.
+
+But first, a note on
+
+### Stargazing
+
+Traditional frequentist way of selecting variables in a model is stargazing i.e. looking out for those asterisks in summary tables. 5% significance level truly is arbitrary. P values do not regulate accuracy. Only about preventing type 1 errors.
+
+Think about a contest between different models like a race between horses. For a given sample, one horse will win, and the distance between the horses gives us their relative performance. To predict the next race we have this info for the current race. 
+
+### Human brain size and $R^2$
+
+Humans have big brains. Body mass vs brain volume relationship in hominins is relatively clear. But we are a big outlier for this. We want to see this relationship though and fit a model, and then see how good our model is. The most common (not right) way to measure if a model is good or not is with variance 'explained' or $R^2$. This is the relative difference between the variance in the residuals vs. the variance in the outcome. $R^2 =1$ is the goal and means you explained all the variance. Silly. This is trivial - but is in Nature papers.
+
+We start with a simple linear model with a single slope $\beta$. This has an $R^2 = 0.51$. However, we can add more and more parameters for polynomials to demonstrate the absurdity. Cubic it goes to 0.54. Can go to an order 6 polynomial as we have 6 terms. The R-squared increases as you increase parameters up to 1 when you have the 6 order polynomial. $R^2$ is a trap - This is Scylla our many headed (parametered) monster.
+
+**Underfitting** = Insensitive to exact data (to our sample). If we run simple linear regressions but each time remove one of our hominin points, then we see the mean posterior line doesn't move very much.
+
+**Overfitting** = Very sensitive to exact data. If we run our 5th order polynomial with data points removed, big big changes in our curves.
+
+To overcome this, we want the *regular* features of our sample. We achieve this with regularization, which in a Bayesian framework is regularising the priors. So prior predictive simulation is very important. Similar to using penalised likelihood. We can also do cross validation - leaving data out and test out of sample predictive performance. Information criteria are another strategy - measures the cross-validation performance - in theory how well will prediction work. Also need science i.e. iterative learning in groups. 
+
+# Lecture 8 - Ulysses' Compass 2
+
+### Model Comparison - Entropy, Accuracy, Regularization, Information Theory
+
+## Information theory
+
+The gold standard way of scoring a models accuracy from information theory- model prediction out of sample. Machine prediction obeys information theory. When we don't know a future event, there is uncertainty. When we learn more, the uncertainty will reduce. But we need a metric for this reduction in uncertainty. In Information theory: 
+
+> *Information* is the reduction in uncertainty caused by learning an outcome.
+
+Weather. Los Angeles doesn't have weather - just hot and muggy. If you know the weather today is sunny, your uncertainty is small about the weather tomorrow. It'll probably be sunny. Glasgow - Lots of rain, more rain than not. If it's raining today, likely to rain tomorrow. Uncertainty still low though. New York - Very variable weather - Uncertainty is higher. This uncertainty is drawn from each places general climate - frequency distributions of their weather.
+
+in 1948, Claude Shannon derived **information entropy**:
+
+$$H(p) = - Elog(p_i) = \displaystyle\sum_{i=1}^{n}p_ilog(p_i)$$
+ > Uncertainty (H) in a probability distribution (p) is the average (minus number) log-probability of an event
+
+So, now lets apply this to the weather again as an example. Say on a given day it can only (simplification) be rainy or sunny. Each of these events ($i$ in the equation, and there are $n$ events, here $n = 2$) occurs with a probability, and these probabilities add up to 1. We have two cities, the first is Glasgow, which has a probability of rain of 0.6 on a given day (so 0.4 of sun). The probability distribution $p$ for Glasgow in R syntax is therefore `p = c(0.6,0.4)`. The information entropy, or uncertainty of Glasgows weather probability distribution can therefore be calculated as:
+
+```{r inf ent glas}
+p <- c(0.6,0.4)
+H <- - sum(p*log(p)) # remember the minus
+H
+```
+
+So Glasgow's weather has an information entropy of 0.67, which is reasonably high i.e. we are quite uncertain about what Glasgow's weather will be and there isn't much scope for surprise i.e. prepare for anything. Now we will compare to a new city, Abu Dhabi. Here, it really really doesn't rain very often at all, maybe once or twice a year (~1% of days). So on a given day, the probability distribution for Abu Dhabi's weather is `p = c(0.01,0.99)`. And the Information Entropy is:
+
+```{r inf ent abu}
+- sum(c(0.01,0.99)*log(c(0.01,0.99)))
+```
+
+This is a unique criterion. **Its the uncertainty in a distribution**. We call this the **information entropy**, or, we can say that this is the potential for surprise. The probability distribution is a vector of the probability of different events (so for different weathers, there is a probability that they can occur). In a place where the weather is **not** very variable like Los Angeles, the potential for surprise is high, but the information entropy, or uncertainty in the weather distribution, is **low**.
+
+## Entropy to Accuracy
+
+But we don't want to just know the uncertainty in our probability distribution (posterior distribution - or likelihood in frequentist). We want to know relative differences in the uncertainty of probability distributions. This is the basic premiss behind model comparisons.
+
+So, say we now have two probability distributions $p$ and $q$. $p$ is the true probability distribution, and $q$ is some model.
+
+We want to know how accurate $q$ is at describing $p$. This is what we also want to do in statistics but we never have $p$, we just have to compare two competing models. We can compute this with the **distance**, or **divergence**. This is the Kullback-Leibler divergence of two probability distributions.
+
+$$D_{KL}(p, q) = \displaystyle\sum_{i}p_i(log(p_i) - log(q_i))$$
+
+This is the average difference in the log-probability of our two distributions (averaging over $p$ too with first term). This is a distance but **not symettric**. Interested in this for stats, because we can calculate the entropy of our model, and then the entropy of truth. Then the Kullback-Leibler divergence gives the difference in these probability distributions.
+
+The divergence of $q$ from $p$ is only 0 when $q = p$ i.e. there is no additional uncertainty when we use a probability distribution to represent itself.
+
+Divergence is not symmetric! Imagine a scenario taking a rocket from Earth to Mars, but you don't know much about the planet, but you are going to use the water composition of earth to try and predict whether you will land on water or land in Mars. Earth is a high entropy system, because it has a lot of both (70/30 split), so your potential for surprise when you get to Mars is quite low i.e. the Glasgow situation predicting tomorrow's weather. You plan for both water and land. Now we flip around and travel from Mars to earth and use Mars to predict earth's composition. Mars is a low entropy system because there is much less water i.e. the potential for surprise is much higher. So, when you get to earth and there is lots of water, this is a surprise. Mars is like LA, big differences in probabilities for the terrain types. So, in terms of symmetry: **The information distance from Earth to Mars is therefore smaller than that from Mars to Earth.**
+
+This is a general concept for *Okham's* razor too, simpler models have higher entropy, so largely their prediction out of sample is stronger.
+
+## Estimating Divergence in Practise
+
+In reality with statistical models, we don't have a **true** probability distribution. We wouldn't need statistics if we already had $p$. Instead, what is more likely is that we have two models, $q$ (like before) and $r$.
+
+What we can do instead here is substitute out the true probability and look at the divergence between our candidates $q$ and $r$. So, while we don't know where $p$ is, we can estimate which of our candidates is closer. This seems odd but it works.
+
+We can convert our probability for each candidate to a **log-score**:
+
+$$S(q)= \displaystyle\sum_{i}log(q_i)$$
+This is very similar, and indeed an estimate of our information entropy $Elog(q_i)$, but instead without dividing by the number of observations.
+
+Now the question becomes how we get at the probability distribution $q$ from a bayesian statistical model. The answer is from the posterior distribution. The entire posterior. We have to find the log of the average probability for each observation i, where the average is taken over the posterior distribution. Then we calculate the
+
+### Log pointwise predictive density (lppd)
+
+Where, for a set of data $y$ and a posterior distribution $\Theta$, the $\sf lppd$ is given by
+
+$${\sf lppd} (y, \Theta) = \displaystyle\sum_{i}log\frac{1}{S}\displaystyle\sum_{s}p(y_i|\Theta_{s})$$
+Where S is the number of samples from the posterior (til now from our `sim` function in `rethinking` where we get samples from the posterior), $\Theta_s$ is the s-th set of sampled parameters values from the posterior distribution.
+
+lppd or out log-score is converted to **Deviance** often, by being multiplied by -2, which makes smaller values better. the 2 is chosen for historical reasons. Lower deviance is like smaller divergence in our KL-divergence for the planets. So we use **lppd** to get the **Bayesian Deviance Metric**.
+
+## Scoring the right data - Out Of Sample
+
+Our log-probability score is a good principled way to measure the distance of our model from our truth target. However, it has the same problem as the $R^2$, it **improves as the model gets more complex**, risking the wrath of the many headed beast of Scylla (overfitting). We all overfit sometimes. These tools allow us to measure and account for it though.
+
+So, what we need to is get the **out-of-sample** log-probability score instead. This is the best way.
+We do this by following a training/test data framework. As a thought experiment to demonstrate the value in this we can see an example from Richard.
+
+1. Training sample of size $N$
+2. Compute the posterior distribution of some model on this training sample, and calculate our log-probability score.
+3. Now obtain a unique sample from the same process, the test sample.
+4. Compute the log-probability score for the test sample.
+
+Sure enough, the test-sample log-probability score does not increase (or deviance decrease) as the number of parameters increases. The deviance is lowest in simulations for the correct number of parameters. However, on average the deviance will be lower for in-sample predictions. This is overfitting. - it's ok.
+
+## Golem taming - Regularization
+
+**Improve your priors and be sceptical!!**. One thing we need to be clear on is that we must be sceptical of the sample. When we aren't sceptical of the sample i.e. when we have flatter priors, then the model learns too much from the sample and overfits. This is a big criticism of frequentist statistics.
+
+Using informative, conservative priors will reduce over fitting because it means that the model learns less from the sample. Choose priors which can only produce realistic and even just possible outcomes. **Prior predictive simulation** is very useful.
+
+The most common sceptical prior is the **regularizing prior**. Below is a simple example of this, where we have a Gaussian prior that is more and more sceptical, or regularized. The degree of regularization is controlled with the standard deviation of the prior, which, assuming that our parameter has been standardised in the correct way, simply controls how tight the gausian distribution i.e. how sceptical we are about where that parameter value can lie.
+
+```{r, regularized priors example, echo = FALSE, fig.width= 8, fig.height= 5}
+
+n1 = 10000
+vec = c(0.05,0.1,0.25,0.5,1)
+
+tibble(sim = rep(1:n1, length(vec)), 
+       sd = rep(vec, each = n1),
+       val = unlist(lapply(vec, FUN = function(x) rnorm(n1,0,x)))) %>% 
+   mutate(sd = paste0("sd = ", sd)) %>% 
+   ggplot(aes(x = val, fill = sd)) + 
+   geom_density(alpha = 0.7) +
+   guides(fill = guide_legend(title = "Degree of\nregularization")) +
+   coord_cartesian(xlim = c(-2,2), ylim = c(0,5)) +
+   labs(x = "Parameter value", y = "Density") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+```
+
+
+This prior, when tuned correctly, reduces overfitting (thereby makes the model worse at fitting the sample), but produces better predictions. It produces better predictions because it learns less from the data.
+
+It is especially important to be sceptical and use regularizing priors when the sample size is small, as it makes a bigger difference to our deviance. For larger samples this matters much less. Here regularization doesn't do much extra for us. But wait - in multilevel models.
+
+Regularisation is rarer in science - interesting why. Not taught, reduces the number of significant results. Scientists also aren't judged on predictive accuracy. This is bad.
+
+## Cross-validation and Information Criteria
+
+A way of estimating out-of-sample deviance? This can also be thought of as identifying overfitting risk. Both cross-validation and information criteria provide tools for us to get at this, and they both tend to perform similarly. Have to remember that this is small world stuff, estimate these things in the small world of our data.
+
+#### Cross Validation
+
+Leave out some of your observations, train your model to the remaining. Score the models predictive performance on the data that were left out. Average this score on several leave-out sets and this gives you estimate of out-of-sample accuracy.
+
+Question then is which data to leave out? How many **folds** (chunks of observations) to include in this process. Some advice states that both too few and too many can be bad, but this isn't always found in simulation experiments. Basically, this is not trivial. 
+
+However, it is extremely common to use single unique observations i.e. the maximum number of folds possible. This is called **leave-one-out**, or **LOO** cross validation. 
+
+This is very accessible for lots of models but can be very computationally intensive if you are working with lots of observations.
+
+A useful approximation of cross-validation scores is using **Importance Sampling (IS)**, calculating the importance of each observation for the posterior distribution.
+
+One very useful tool for this is **Pareto-Smoothed Importance Sampling** or **PSIS** from Aki Vehtari in Helsinki. The `loo` package gives you **PSIS-LOO** with lots of very useful diagnostics for your model.  
+
+#### Information Criteria
+
+Information criteria provide a theoretical estimate of the relative out-of-sample KL divergence.
+
+From the godfather **Hirotugu Akaike**, who worked on a lot of this information theory stuff. This lead to the famous AIC, an estimate of the KL distance, which is derived from the Taylor expansion of KL-divergence out of sample information score. 
+
+You can see the underpinnings and reasoning for Akaike's work and this idea of information criterion in the in-sample and out-of-sample deviances for Richards increasing parameter example earlier, when we use the flat priors. The difference between the deviance (or lppd) for in and out of sample sets for a given example of training data is approximately **2x number of parameters**. So, when there are five parameters the difference in deviances is approximately 10. This forms the basis of Akaike's information criterion (AIC):
+
+$${\sf AIC} = D_{\sf train} + 2k = -2{\sf lppd} + 2k$$
+
+Where $k$ is the number of parameters, and $D$ is our deviance score that we capture with the log pointwise predictive density.
+
+And under certain (strict) conditions
+
+$$D_{\sf train} + 2k \approx E\,D_{test}$$
+So the out-of-sample is approximately equal to the AIC. However, the strict conditions are mainly that the posterior has to be a multivariate gaussian and that there are flat priors. Neither of these are very realistic assumptions, and we want something much more general for our models - AIC is of historical interest now. Akaike's work on this however was absolutely revolutionary.
+
+### Widely Applicable Information Criterion (WAIC)
+
+This is the information criterion that we will use. It doesn't assume a multivariate gaussian posterior and works with regularizing priors. It is general. By Sumio Watanabe. Also called the **Watanabe Akaike Information Criterion**.
+
+What we have to do is take the log pointwise predictive density and then incorporate a **penalty term** based on the variation in the log-probabilities of each observation, and then sum these up to get the overall penalty. Then we put this on the deviance scale. For our data $y$ and our posterior distribution $\Theta$,
+
+$${\sf WAIC}(y, \Theta) = -2({\sf lppd} - \displaystyle\sum_{i}{\sf var}_\theta\,{\sf log}\,p(y_i | \theta))$$
+
+This has a function in `rethinking` called `WAIC` surprise surprise. The penalty term is also called the $p_{\sf WAIC}$, or the effective number of parameters (so similar to AIC in that way), but actually it doesn't necessarily relate to the number of parameters. Each observation has a penalty, so we can see how each observation is contributing to overfitting in our data.
+
+Now lets back to some R and apply what we have learned to calculate the lppd and the WAIC for a linear model for the classic `cars` data in R, looking at how speed affects stopping distances in a simple linear regression. This is to apply the equations above to some real data. Not using the in built equations to do this so you actually get a sense for how they work. Not standardising the variables here.
+
+```{r cars lppd WAIC, fig.height= 4, fig.width= 4}
+
+# 1. the data
+data("cars")
+plot(cars)
+
+# 2. the model
+m7 <- quap(alist(
+   dist ~ dnorm(mu, sigma),
+   mu <- a + b*speed,
+   a ~ dnorm(0,100), # relatively flat intercept term
+   b ~ dnorm(0,10), # wide-ish prior too
+   sigma ~ dexp(1)), 
+   data = cars)
+
+# 3. samples from the posterior
+set.seed(10)
+post <- extract.samples(m7, n = 1000)
+
+# 4. log-likelihood, or log-probability for each observation and each sample
+n_samples <- 1000
+logprob <- sapply(1:n_samples,
+                  function(s){
+                     mu <- post$a[s] + post$b[s]*cars$speed
+                     dnorm(cars$dist, mu, post$sigma[s], log = TRUE)
+                  })
+
+# 5. lppd for the log probabilities - averaged (special) log probabilities over our samples
+n_cases <- nrow(cars)
+lppd_each <- sapply(1:n_cases, function(i){
+   log_sum_exp(logprob[i,]) - log(n_samples)
+})
+
+lppd <- sum(lppd_each)
+
+# 6. now the penalty term, which is just the variance in the log probabilities of the posterior.
+pWAIC <- sapply(1:n_cases, function(i) {var(logprob[i,])})
+
+# 7. WAIC calculation
+-2*(lppd - sum(pWAIC))
+WAIC(m7) # compare to the inbuilt way of doing this for a quap
+
+```
+
+Comparing all these things in predicting the out of sample accuracy. They all do a really good job basically. You can see this with similar comparisons to the actual out of sample deviance compared to our metrics for Richards example in the book. Again as the sample increases the prefomance is identical and almost perfect.
+
+If these metrics disagree, it might be an indicator that you have a couple of observations that are having a really big influence, and that the different methods are dealing with this differently. Use this as a tool to check your assumptions about your data.
+
+## Model Comparison
+
+Not model selection alone. Avoid model selection if you can. Don't just want one best model. We want sets of competing models for causal inference too.
+
+An example is model mis-selection. Recall the fungus model with the pipe DAG. Remember that in the pipe, the model with treatment *and* fungus isn't the one we want causally. Actually want to just have treatment. But, if we compare these in terms of WAIC, the one with both does best at predicting. This is the same for all of the invalid, confounded models shown in the DAGs examples before. All will make better predictions.
+
+**Inference about cause and model comparison are not the same thing.** We need to do both with sets of competing models.
+
+## Something about *Cebus*
+
+These are Capuchins. Richards favourite monkey. Lives a long time, but is very small. Big brain for its body size. Clever. Diabolical.
+
+Interesting case for life-history evolution. Want to know why primates live a long time. Have a DAG with brain size, body mass, lifespan, and some unobserved variables. Larger mass, live longer. Brain size up, live longer. And then the unobserved.
+
+When linear regression, both are positive and influence longevity. Brain size a good out-of-sample predictor model. But, when both are together in multiple regression, brain size stays positive but body mass flips negative and has very broad errors. Also a good out of sample predictor. If we go to a pointwise look at WAIC for the two competing models, we can start to reveal why this might be. There are particular genuses that are much better for one model compared to the other, and vice versa. *Cebus* is interesting here because they live long but have a small body size. But have a big brain for their body size. So the out-of-sample prediction for *Cebus* is better when we have both of the variables. Is there a *Cebus* collider....?
+
+Comparing models, particularly with these **point-wise** log probabilities and error terms, really allows you to see this, and you can find outliers.
+
+## Outliers
+
+```{r dag divorce 2, fig.width= 3, fig.height=3}
+plot(dag_age)
+```
+
+In the divorce example from chapter 5, looking at age at marriage, marriage rate and divorce rate, we saw that some states were really hard to for the models posterior predictions to pick up on. **Idaho** in particular appeared to be an outlier, this is because of the mormons.
+
+Lets look at PSIS, pareto-smoothed importance scores, which are an approximation of the out-of-sample cross validation for our three competing models for Divorce rate,
+
+$${\sf Divorce}_i \sim \sf{Normal}(\mu_i,\sigma)$$
+
+* model 5.1 $\mu_i = \alpha + \beta_A{\sf Age.at.marriage}_i$
+
+* model 5.2 $\mu_i = \alpha + \beta_M{\sf Marriage}_i$
+
+* model 5.3 $\mu_i = \alpha + \beta_M{\sf Marriage}_i + \beta_A{\sf Age.at.marriage}_i$
+
+Now lets compare these models with pareto-smoothed importance scoring
+
+```{r PSIS div}
+compare(m5.1,m5.2, m5.3, func = PSIS)
+```
+
+We can see here first that the best out of sample predictions in this case are from the model with only the age at marriage, which in this case is also the model we need for causal inference. So, age at marriage alone is the best explanation for divorce rate.
+
+However, when we run the pareto-smoothed importance scoring, we get the warning from all three models that some of the pareto k values are larger than we might expect, and that we should look at the pointwise importance scores to see if there are individual outliers. We do this with `pointwise = TRUE` when we run PSIS on our causal model.
+
+If we look at both the pointwise penalty from the WAIC and the pointwise PSIS values, we will be able to get a sense if there are big outliers.
+
+```{r outlier div, fig.width = 5, fig.height = 3}
+set.seed(12)
+PSIS_m5.3 <- PSIS(m5.3, pointwise = TRUE)
+set.seed(12)
+WAIC_m5.3 <- WAIC(m5.3, pointwise = TRUE)
+plot(PSIS_m5.3$k, WAIC_m5.3$penalty, col = rangi2)
+```
+
+At the top right corner we can see Idaho. The combination of a high pareto k and a high WAIC penalty gives us strong suspicion that it is an outlier. It is very influential on the posterior distribution.
+
+What do we do about this? Shouldn't drop these before we run a model, because we can only know if a point is exerting a strong effect on a model if we actually have the model already.
+
+One answer is to switch from a gaussian outcome to a **Students-t** distribution outcome. As we've seen in previous examples, Gaussian models have quite thin tails i.e. the probability density drops off sharply at extreme values. A **Student-t** distribution, with parameter $v$ that controls the thickness of the tails, can be really useful.
+
+you specify this with `dtstudent` just like `dnorm` when you generate your initial model, just with a chosen v parameter.
+
+$${\sf Divorce}_i \sim \sf{Student-t}(v, \mu_i,\sigma)$$
+$$\mu_i = \alpha + \beta_M{\sf Marriage}_i + \beta_A{\sf Age.at.marriage}_i$$
+
+# Lecture 9 - Conditional Manatees
+
+### Interaction Terms
+
+There are dichotomous things in the universe that either aren't or are. Colourblindness test for child with dots of colour with different animals. Either you are or aren't colourblind (in different areas). 
+
+Statistics isn't always like this at all. Even though things are packaged and generally prescribed as 'statistical tests' that say yes or no to things. However, in reality things tend to be continuous or spectral. Lots of off-the-shelf tolls are useful (like AIC, not so much for p values), but they don't always fit. We need to have **bespoke models** that are specific to the system at hand.
+
+US blizzards, there was a prediction for a huge blizzard in January 2015 that didn't end up happening, even after the city of New York was pretty much shut down. People were mad because the tests didn't prescribe the right thing and it wasted a lot of money (course they did in the US). Actually it was a good decision to do the shut down (dichotomise) based on the meteorological forecasts. Medium-range numerical weather prediction forecasting effort from the ECMWF. They predicted (unlike other forecasts) that there was going to be much more snowfall and bad weather than others thought. Other models in this case were more accurate. However, this forecast was far more extreme, and they acted on it accordingly. Unhappy people were safe still. Still should plan for more extreme events.
+
+> Accuracy always matters, but it isn't all that matters. We're not testing, we're summarising.
+
+## Manatees and WW2 Bombers
+
+The manatee *Trichechus manatus*. Aquatic mammal. Related to the elephant. Large bodied, gentle vegetarian mermaid. Only real predator and threat to them is the speed boat. In Florida in particular, lots of poor manatees have scars on their back from speed boats.
+
+Florida has made efforts to prevent this where possible, to change the speedboat rotors to cages. But this didn't work. The rotor doesn't always kill the manatee, but the keel of the boat does. The ones with the scars are the survivors, and the actual dead ones don't show up in the sample.
+
+Famous similar example in statistics from WW2 bomber planes. Famous British Bomber, Whitworth Whitley bomber. As metal was in short supply, and the planes needed repairs anti-aircraft guns. Using damage patterns on the plane, Abraham Wald use statistics to decide where on the plane should be re-covered with metal armour. Where should we put the armour? They wanted him to use where the damage was to say where they *should* armour. 
+
+But actually, he noticed that all the planes they gave him actually had no damage in the cockpits or engines. They had lots of damage in the wings, but could still fly. He recommended armouring the bits that were least armoured i.e. more likely to actually enhance survival.
+
+If we imagine this as a DAG, the simple case is that we are interested in the survival of our bombers/manatees with respect to the things we observe from the rotor or wing. We only observe the rotor damage or the wing damage, but actually we are *Conditioning* on a collider of survival. Or rather nature has conditioned on the survival of the manatee/plane.
+
+```{r DAG manbomber, fig.width= 6, fig.height= 3, echo = F}
+dag_mana <- dagitty("dag{rotor -> survival;
+                         keel  -> survival}")
+coordinates(dag_mana) <- list(x = c(rotor = 1, survival = 2, keel = 3), 
+                              y = c(rotor = 1, survival = 2, keel = 1))
+
+dag_bomb <- dagitty("dag{wing -> survival;
+                            engine -> survival}")
+coordinates(dag_bomb) <- list(x = c(wing = 1, survival = 2, engine = 3), 
+                              y = c(wing = 1, survival = 2, engine = 1))
+
+par(mfrow = c(1,2))
+drawdag(dag_mana)
+drawdag(dag_bomb)
+```
+
+So, when nature conditions on survival, we see the potentially minimal effect of either the rotor/wing on the survival of our thing of interest, but we've open the back door and see some of the effect the engine/keel is actually having on survival. E.g. Rotor damage ends up correlated with the lethal damage.
+
+This is a common issue, we have to be really careful about **selection bias**. We're going to focus here on **Conditioning**. Nature is like that. Thinks are conditional, not just additive.
+
+#### Conditioning = Dependence on a state
+
+Everything is conditional in statistics, on the data, the model or information state. But here we're looking at the **influence of a variable conditional on another variable**. This is called an **Interaction**.
+
+Natural examples:
+
+* Influence of sugar on the sweetness of your coffee depends on stirring.
+* Influence of gene on phenotype depends on environment.
+* Influence of skin colour on cancer depends on latitude.
+
+In Generalized Linear Models (coming soon) - All predictors interact to some degree. This is because there is a boundary on your outcome, either with counts, or with binomial etc. So you are always conditioning on something. Multi-level models are just big interaction models.
+
+## Interactions
+
+In a DAG, they don't look special, we've seen them before as colliders. The DAG is just heuristic and displays confounding risk visually. We use the model to do the inference on this. So the coffee being sweet is a function of both the amount of sugar and the stirring. It's an interaction. We are trying to figure out this function.
+
+A non-interacting example would be if they were independent and additive i.e. there was an effect of stirring on sweetness, and there was an effect of sugar on sweetness. But an interaction effect is when the **effect of one variable depends on the effect of another**. So, the effect of stirring on sweetness gets larger as the amount of sugar increases.
+
+## Economics of African nations
+
+An example of using an interaction term. Africa is really really big and extremely diverse. Most of the genetic variation outside of Africa is just a subset of the genetic variation within Africa. Maps also don't do it justice (damned Mercator maps). Lots of diversity across the nations due contemporary and historical reasons. 
+
+One interesting relationship across nations is how physical geography influences a countries economics. More specifically, across the world, there is a slight negative relationship between the ruggedness of a countries terrain and their GDP. Makes sense, if the terrain is more difficult, more difficult to access and move resources and grow. But for African nations, this seems to be completely reversed in direction. Rugged terrain is bad everywhere except Africa.
+
+```{r rugged data, fig.width= 8, fig.height= 6}
+data(rugged)
+rug <- rugged %>% 
+   drop_na(rgdppc_2000) %>% 
+   mutate(log_gdp = log(rgdppc_2000),
+          log_gdp = log_gdp / mean(log_gdp), # remember to standardise
+          rugged = rugged/max(rugged),
+          africa = if_else(cont_africa == 0, 1, 2)) %>% # convert to a 1,2 index to prevent variance issues with the 0
+   mutate(africa_lab = if_else(africa == 2, "Africa", "Rest of world")) %>% 
+   dplyr::select(country, rugged, africa, africa_lab, log_gdp)
+   
+# interesting plot
+ggplot(rug, aes(x = rugged, y = log_gdp, colour = factor(africa_lab))) +
+   geom_text(aes(label = country), size = 3.5, alpha = 0.7) +
+   scale_colour_manual(name = NULL, values = c("cornflowerblue", "firebrick")) +
+   labs(x = "Terrain ruggedness", y = "log GDP (as proportion of mean)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+
+There is something to understand here in terms of the history of global economics. What the fudge is going on.
+
+## Prior predictive simulation
+
+Let's first do prior predictive simulation in a model with GDP ($y$) as our response/outcome a country's ($i$) ruggedness ($r$) only.
+
+$$log\,y_i \sim {\sf Norm}(\mu_i,\sigma)$$
+$$\mu_i = \alpha + \beta(r_i - \bar{x})$$
+We will compare two sets of priors for $\alpha$ and $\beta$, first one that is pretty un-conservative ($\alpha \sim {\sf Norm}(1,1)$ and $\beta \sim {\sf Norm}(0,1)$) and the second with a higher degree of regularisation($\alpha \sim {\sf Norm}(1,0.1)$ and $\beta \sim {\sf Norm}(0,0.3)$).
+
+```{r pps africa, fig.width= 9, fig.height= 5}
+
+# un-conservative priors
+m8.1 <- quap(alist(
+   log_gdp ~ dnorm(mu, sigma),
+   mu <- a + b*(rugged - mean(rugged)), # standardising to the mean for the sake of the intercept
+   a ~ dnorm(1, 1),
+   b ~ dnorm(0, 1),
+   sigma ~ dexp(1)),
+   data = rug)
+
+# regularising priors
+m8.2 <- quap(alist(
+   log_gdp ~ dnorm(mu, sigma),
+   mu <- a + b*(rugged - mean(rugged)),
+   a ~ dnorm(1, 0.1),
+   b ~ dnorm(0, 0.3),
+   sigma ~ dexp(1)),
+   data = rug)
+
+# sample from the priors
+pr8.1 <- extract.prior(m8.1, n = 50)
+pr8.2 <- extract.prior(m8.2, n = 50)
+
+# get values from the priors for rugged data with link
+rug_seq <- seq(-0.1,1.1,length.out = 30)
+mu8.1 <- link(m8.1, post = pr8.1, data = data.frame(rugged = rug_seq))
+mu8.2 <- link(m8.2, post = pr8.2, data = data.frame(rugged = rug_seq))
+
+# prior predictive simulation data.frames for easy plotting
+pps8.1 <- as.data.frame(mu8.1) %>% 
+   mutate(sim = 1:nrow(mu8.1)) %>% 
+   pivot_longer(-sim, names_to = "rugged", values_to = "gdp") %>% 
+   mutate(rugged = rep(rug_seq, times = nrow(mu8.1)))
+
+pps8.2 <- as.data.frame(mu8.2) %>% 
+   mutate(sim = 1:nrow(mu8.2)) %>% 
+   pivot_longer(-sim, names_to = "rugged", values_to = "gdp") %>% 
+   mutate(rugged = rep(rug_seq, times = nrow(mu8.2)))
+
+# plots
+pl8.1 <- ggplot(pps8.1, aes(x = rugged, y = gdp, group = sim)) +
+   geom_line(size = 0.5, alpha = 0.6, colour = "cornflowerblue") +
+   geom_hline(yintercept = max(rug$log_gdp), linetype = "dashed", size = 1) +
+   geom_hline(yintercept = min(rug$log_gdp), linetype = "dashed", size = 1) +
+   coord_cartesian(xlim = c(0,1), ylim = c(0.6,1.5)) +
+   labs(x = "Terrain ruggedness",
+        y = "log GDP (as a proportion of the mean)",
+        title = "Flatter prior") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+pl8.2 <- ggplot(pps8.2, aes(x = rugged, y = gdp, group = sim)) +
+   geom_line(size = 0.5, alpha = 0.6, colour = "cornflowerblue") +
+   geom_hline(yintercept = max(rug$log_gdp), linetype = "dashed", size = 1) +
+   geom_hline(yintercept = min(rug$log_gdp), linetype = "dashed", size = 1) +
+   coord_cartesian(xlim = c(0,1), ylim = c(0.6,1.5)) +
+   labs(x = "Terrain ruggedness",
+        y = "log GDP (as a proportion of the mean)",
+        title = "Regularising prior") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+grid.arrange(pl8.1, pl8.2, ncol = 2)
+
+```
+
+After applying `extract.prior` and then `link` to pull out samples of our priors and then link those to new ruggedness values i.e. draw some lines from the priors, we can see samples from un-conservative (left) and regularising (right) priors, with the sampled lines in blue. The dashed lines show the possible parameter space for log GDP, i.e. the maximum and minimum values from the data. We can see that the un-conservative priors predicts wild relationships.
+
+**Regularise** and simulate your priors!!!
+
+## Getting towards the interaction term
+
+You *could* now split the data. This is a bad idea (generally)! There is no inference for how you split the data, and does not pool the information so that we can directly compare the slopes. Keep them in the same model.
+
+If we now add a categorical term for whether or not each country is in Africa with $C$, then all we investigate is an additional additive term for an intercept difference between African and non-African nations on top of a (now) weaker ruggedness effect. Here, remember the $\alpha$ prior becomes $\alpha_{C[i]} \sim {\sf Norm}(1,0.1)$ and the $\mu$ equation becomes:
+
+$$\mu_i =  \alpha_{C[i]} + \beta(r_i - \bar{r})$$
+This just adds parallel lines. You don't need to do this i.e. you know what this looks like in terms of model predictions.
+
+## Categorical interaction term
+
+So with this, we can build our model with an interaction term including an index (1, 2) for the categorical variable of in/out of Africa. We are just adding the index to the slope. Remember again that we don't want to go with the traditional convention of 0,1 categorical variables because of the variance issues. The full joint model can now be written as
+
+$$log\,y_i \sim {\sf Norm}(\mu_i,\sigma)$$
+$$\mu_i =  \alpha_{C[i]} + \beta_{C[i]}(r_i - \bar{r})$$
+$$\alpha_{C[i]} \sim {\sf Norm}(1,0.1)$$
+$$\beta_{C[i]} \sim {\sf Norm}(0,0.3)$$
+$$\sigma \sim {\sf Exponential}(1)$$
+
+and now the model with the added slope term for each continent. We will also plot out the posterior mean and 97% prediction intervals from the posterior distribution.
+
+```{r quap africa rugged, fig.width= 8, fig.height= 6}
+# model
+m8.3 <- quap(alist(
+   log_gdp ~ dnorm(mu, sigma),
+   mu <- a[africa] + b[africa]*(rugged - mean(rug$rugged)),
+   a[africa] ~ dnorm(1,0.1),
+   b[africa] ~ dnorm(0,0.3), # slope term indexed for each category
+   sigma ~ dexp(1)),
+   data = rug)
+
+# summary
+precis(m8.3, depth = 2)
+
+# out of sample predictive accuracy compared to rugged alone? pareto smoothing
+compare(m8.3,m8.2, func = PSIS)
+
+# posterior predictions and prediction intervals
+newdat <- expand.grid(africa = c(1:2), rugged = seq(0,1, length.out = 50))
+mu8.3 <- link(m8.3, data = newdat)
+
+preddat <- newdat %>% 
+   mutate(mn = colMeans(mu8.3),
+          lwr = apply(mu8.3, 2, PI, prob = 0.97)[1,],
+          upr = apply(mu8.3, 2, PI, prob = 0.97)[2,],
+          africa_lab = if_else(africa == 1, "Rest of world", "Africa"))
+
+# And your interaction plot
+ggplot(rug, aes(x = rugged, y = log_gdp, colour = africa_lab)) +
+   geom_point(size = 4, alpha = 0.5) +
+   geom_smooth(stat = "identity", data = preddat,
+               aes(y = mn, ymax = upr, ymin = lwr, fill = africa_lab)) +
+   scale_colour_manual(name = NULL, values = c("cornflowerblue", "firebrick"),
+                       aesthetics = c("colour", "fill")) +
+   labs(x = "Terrain ruggedness", y = "log GDP (as proportion of mean)") +
+   theme_bw(base_size = 12) + theme(panel.grid = element_blank())
+
+```
+
+Always the best idea to plot out your predictions from an interaction model. This is because the influence of a predictor depends on multiple parameters and their covariation.
+
+## Interactions are symmetric
+
+From our golems perspective, interaction models are testing two identical models that are symmetric. In this example:
+
+1. That the effect of ruggedness on GDP depends on the continent you are on.
+2. That the effect of continent on GDP depends on ruggedness.
+
+We will tend to the first one because we construct a causal mechanism in our brains as humans first. It's harder to picture (impossible for) a country's continent changing, but easier to do with ruggedness, so we tend to frame the question that way round.
+
+Can plot this out as a counterfactual (Richards plot), to investigate how ruggedness would change the expected difference in GDP when a country moves from Africa out of it. At low ruggedness being an African nation harms GDP but at a high ruggedness it helps. 
+
+*I am not really sure what the value of adding this was, to me you can ge this from the posterior mean plots. What is the benefit of doing this?*
+
+## Continuous interaction terms
+
+Now for a more involved example with two continuous terms for data on tulips. We have 27 replicate blooms $b$ of tulips that have been grown in three different levels of **both** water $w$ and shade $s$. What happens when both of our variables of interest are continuous, and how do we go about testing this interaction?
+
+Conceptually not too much of a jump, but we what we need is to become cleverer with out plotting. Using `tulips`, which has three variables (plus a block variable - leaving this for mixed models later). We want bigger blooms. How do we manipulate water and shade to get it? Just one of them? Both together?
+
+Our response variable is the blooming value
+
+$$b_i \sim {\sf Norm}(\mu_i,\sigma)$$
+
+So we will compare
+
+1. No interaction - *The effects of water and shade are independent*
+$$\mu_i = \alpha + \beta_w(w_i - \bar{w}) + \beta_s(s_i - \bar{s})$$
+
+2. Interaction - *The effects of water and shade are interdependent*
+$$\mu_i = \alpha + \beta_w(w_i - \bar{w}) + \beta_s(s_i - \bar{s})+ \beta_{ws}(w_i - \bar{w}) (s_i - \bar{s})$$
+
+So, the interaction is again just an additional slope term, but one that incorporates the effects of both water and shade (multiplication). There are three ordinal levels to each of the two predictors of interest. We will standardise these to -1, 0, and 1 by subtracting the mean again. Ordinal but continuous.
+
+But *How is an interaction formed* such that we do this multiplication and getting an extra slope term?
+
+It comes from exactly the same principle as the categorical one. We are making a slope term for our initial variable **conditional** on our other variable. So you can do this by substituting the slope term for water to be a linear model in itself, which is comprised of the $\beta$ just for water $\beta_w$ **and** the conditional, marginal effect of shade as well $\beta_{ws}S_i$. Then, this submodel expands out to the conventional multiplication model above.  In other words, we make a *sub model* for the water effect in which there is also a conditioning effect of shade. Thereby, we investigate whether *the effect of water on blooms is dependent on shade*, and also *vice versa*.
+
+So lets fit these two models. Remember you should also normally do **prior predictive simulation**, but it is omitted here for times sake. Instead Richard has picked reasonably un-conservative regularizing priors.
+
+```{r tulip inteaction, }
+
+data("tulips")
+tulips <- tulips %>% 
+   mutate(blooms = standardize(blooms),
+          water = water - mean(water), 
+          shade = shade - mean(shade))
+
+# 1. No interaction term, independent effects
+m8.4 <- quap(alist(
+   blooms ~ dnorm(mu, sigma),
+   mu <- a + Bw*water + Bs*shade,
+   a ~ dnorm(0.5,0.25),
+   Bw ~ dnorm(0, 0.25),
+   Bs ~ dnorm(0, 0.25),
+   sigma ~ dexp(1)),
+   data = tulips)
+
+# 2. Interaction term, conditional slope
+m8.5 <- quap(alist(
+   blooms ~ dnorm(mu, sigma),
+   mu <- a + Bw*water + Bs*shade + Bws*water*shade,
+   a ~ dnorm(0.5,0.25),
+   Bw ~ dnorm(0, 0.25),
+   Bs ~ dnorm(0, 0.25),
+   Bws ~ dnorm(0, 0.25),
+   sigma ~ dexp(1)),
+   data = tulips)
+
+# look at the interaction model
+precis(m8.5)
+
+# compare out-of-sample predictive performance
+compare(m8.5, m8.4, func = WAIC)
+compare(m8.5, m8.4, func = PSIS)
+
+```
+
+Strong weighting and support for the interaction term, although the pareto k values indicate that there may be some outliers and therefore points that are having a large effect on the model. Generally seems OK though.
+
+Now it is important to inspect our posterior predictions from the model to investigate what our golem has found. The difference here is that we have two variables, both of which we think are important for out outcome. So, we can make panelled plot, or **Triptych** plot (comes from art - where there are three associated pieces next to each other), which shows the effect of water on blooms at different shade values: low, medium and high (easy here as it's just -1,0,1). Three is a good minimum for communication.
+
+> Use `sim` to get posterior predictions incorporating both the variance of $mu$ and $sigma$. 
+
+This is an important distinction, which you must remember for your own work.
+
+```{r tulip post prediction, fig.width = 9, fig.height = 4}
+
+# Posterior predictions on new data
+newdat <- expand_grid(shade = c(-1,0,1), water = c(-1,1))
+
+set.seed(10)
+tulip_pred <- as.data.frame(sim(m8.5, newdat, n = 200)) %>% 
+   mutate(sim = 1:200) %>% 
+   pivot_longer(-sim, values_to = "pred") %>% 
+   group_by(sim) %>% 
+   mutate(shade = newdat$shade, water = newdat$water) %>% 
+   ungroup()
+
+# Triptych plot
+ggplot(tulips, aes(x = water, y = blooms)) +
+   geom_point(alpha = 0.95, size = 4, colour = "darkgreen") +
+   geom_line(data = tulip_pred, aes(x = water, y = pred, group = sim),
+             alpha = 0.15) +
+   facet_wrap(~ shade) +
+   labs(x = "Water", y = "Blooms") +
+   theme_bw(base_size = 12) + 
+   theme(panel.grid = element_blank(), strip.background = element_blank())
+
+```
+
+Bringing back and thinking causally. In reality, there is another backdoor path from shade to blooms, because high light levels increase evaporation rates, thus decreasing water level. In this experiment this doesn't matter, we closed the backdoor paths. However, reality and our experiments are different.
+
+## Extra bits
+
+Interactions are also not always linear. E.g. all data here in relatively cool temperature, but at hot temperatures, there is no tulip blooming. So there would be an interaction say between water and temperature, but this also would be **non-linear** i.e. blooms approach 0 as temp goes up to a threshold.
+
+**Three-way** interactions. Very tricky and often hard to make sense of and do reliably. Need lots and lots of data to estimate reliably, so regularise the crap out of your priors to be sceptical. Can fit the three way interactions easily in this framework. Sanity might stop you from this. However there are some real-life examples where they could be useful. Example of wines from New Jersey beating France in some blind taste judgements. The three variables that can affect the wine score: where the wine is from (NJ/FR), the nationality of the judge (FR/USA), and whether its a red or white wine. These can all plausibly interact and effect each other.
+
+
+
+
