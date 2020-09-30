@@ -36,7 +36,7 @@ Musicologist called Clive Wearing. In 1985 he got herpes but in his brain. It ca
 
 **Multilevel** models are models that remember. By remember they pool information. Here, the properties of clusters of information in our data come from a population. The inferred population defines pooling. If previous clusters improve your guess about a new clusters, then you want to be using this pooling. However, the order that the clusters are 'visited' does not matter. Imagine you're visiting cafes in various European countries. In a lot of ways they are similar. Berlin and Paris have different types of cafe. How long does the coffee take to come? If we've never been to a cafe, the first time we go we get an expectation. If our coffee took 5 minutes to get to us in Paris, you have an expectation about how long coffee should take to get to you in Berlin, but not exactly the same. The fixed effect only method, we would have no expectation. Also, when we visit either cafe, we also update information **overall** regarding how long coffee takes to arrive generally - so we update our expectation for cafes in both Berlin *and* Paris. We're going to do this statistically.
 
-Consider this more explicitly. We programmed a robot to visit two cafes and estimate the waiting time with a Bayesian model. The robot begins with a vague prior for the waiting time with a mean of 5 mins and SD of 1. At the first cafe the robot observes a waiting time of 4 mins, and updates its prior using Bayes theorem, giving it a posterior. However, when it moves to the second cafe, what should it's prior be? It could just use the same prior as for the first cafe. However, this assumes implicitly that the cafes have the same average waiting time. So, the robot can do better by treating the cafes as a population, and using the distribution of waiting times across cafes as it's prior expectation. So here, the prior is actually **learned from the data**. So the robot tracks the parameters of waiting times at each cafe, as well as at least two parameters to describe the population of cafes (mean and sd). When the robot observes new cafes, everything is updated, both the estimates for each cafe and the estimates for the population.
+Consider this more explicitly. We programme a robot to visit two cafes and estimate the waiting time with a Bayesian model. The robot begins with a vague prior for the waiting time with a mean of 5 mins and SD of 1. At the first cafe the robot observes a waiting time of 4 mins, and updates its prior using Bayes theorem, giving it a posterior. However, when it moves to the second cafe, what should its prior be? It could just use the same prior as for the first cafe. However, this assumes implicitly that the cafes have the same average waiting time. So, the robot can do better by treating the cafes as a population, and using the distribution of waiting times across cafes as it's prior expectation. So here, the prior is actually **learned from the data**. So the robot tracks the parameters of waiting times at each cafe, as well as at least two parameters to describe the population of cafes (mean and sd). When the robot observes new cafes, everything is updated, both the estimates for each cafe and the estimates for the population.
 
 How much information is transferred across our units (like cafes) is **dependent on their variation**. If you constantly eat spicy chilli's, you get less stomach bugs. However, they aren't consistent, and the spiciness can vary a lot. Chillis are variable. So if you use your expectation from the whole population, harder to learn and update. Learning this variation is key.
 
@@ -144,14 +144,217 @@ m13.2 <- ulam(alist(S ~ dbinom(N,p),
 
 ```
 
-We get 50 parameters out of this model with `precis` (don't look at it cos it's big). Two that are a bar and sigma, and then 48 which are the per-tank intercepts. The fixed effects model would just have 48. Lets compare these models.
+We get 50 parameters out of this model with `precis` (don't look at it cos it's big). Two that are $\bar{a}$ and $\sigma$ (the overall parameters for the intercept), and then 48 which are the per-tank intercepts. The fixed effects model would just have 48. Lets compare these models.
 
 ```{r tadpole compare}
-
 compare(m13.1, m13.2, func = WAIC)
-
 ```
 Our predictive performance for our varying intercepts model is better (not hugely - but definite increase). Also, note that for `pWAIC` it is lower for our multilevel model than it is for our fixed effects model. Why? Ended up with a stronger prior. Effective number is also lower than the literal number because we regularised our prior. For multilevel models, **the fit to the sample can decrease but the out of sample fit is better - more regularising**.
+
+## Shrinkage
+
+Now lets compare the intercept differences between our fixed effect only model and our multilevel model. We just have to extract samples from the posterior and average this time. No explicit predictions needed. Just have the posterior survival probabilities for each of the tanks i.e. their intercept.
+
+```{r tadpole post, fig.width = 11, fig.height = 5}
+
+# extract the posterior and raw data
+fixeff_post <- extract.samples(m13.1)$a 
+reff_post <- extract.samples(m13.2)$a
+
+# posterior survival summaries
+tibble(tank = rep(1:nrow(tadpole), times = 2),
+       mod = rep(c("fixed", "multilevel"), each = nrow(tadpole)),
+       mean = inv_logit(c(colMeans(fixeff_post), colMeans(reff_post))),
+       lwr = inv_logit(apply(cbind(fixeff_post,reff_post), 2, PI)[1,]),
+       upr = inv_logit(apply(cbind(fixeff_post,reff_post), 2, PI)[2,])) %>% 
+   ggplot(aes(x = tank, y = mean, colour = mod, shape = mod)) +
+   geom_hline(yintercept = mean(inv_logit(extract.samples(m13.2)$a_bar))) +
+   geom_hline(yintercept = mean(tadpole$surv/tadpole$density), colour = "red") +
+   geom_errorbar(aes(ymax = upr, ymin = lwr), 
+                 width = 0, alpha = 0.5, show.legend = FALSE) +
+   geom_point(size = 3) +
+   scale_x_continuous(breaks = 1:48) +
+   scale_colour_manual(name = "", values = c("cornflowerblue","black")) +
+   scale_shape_manual(name= "", values = 16:17) +
+   labs(x = "Tank number", y = "Posterior survival probability") +
+   theme_bw(base_size = 14) +
+   theme(panel.grid = element_blank())
+
+```
+
+Here we have **shrinkage** i.e. we are not just fitting to the sample. Learning the *regular* feature of the sample. Because we have learned the prior from the data adaptively, and pooled information. First, raw mean and posterior mean $\bar{\alpha}$ are different. The raw mean (red) is a lower survival probability. This is because we have imbalanced information across the tanks. The densities vary across tank. So here the $\bar{\alpha}$ is higher, because we have accounted for this density differences.
+
+The main shrinkage phenomenon is that the posterior means shrink towards the population level mean in he multilevel model. Because we have regularised, you see that for low survival tanks the mean shifts up towards the population average (black). As you move further from the mean the more shrinkage there is. This shrinkage decreases though as the density increases i.e. more data with less uncertainty. Shrinkage is the product of a lot of things in our model, but we can easily visualise it. We **reduce our fit to sample to improve our predictive accuracy**. This is similar to regression to the mean phenomenon that we always observe in regression, except here its because of the pooling and thus extreme values regress to the mean.
+
+We can bring this back to poor Ulysses's compass. Varying effects with *partial pooling* (some information shared - not all) are more accurate than fixed effects *without pooling*. The grand mean is maximally underfitting (i.e. if we ignored the tanks and heterogeneity) and also called *complete pooling*. The fixed effects maximally overfit (take each tank independently, but too little data to estimate each mean). These both lead to poor predictions. The varying effects do adaptive regularisation -> better predictions. We are navigating Sylla and Charybdis here adaptively.
+
+If we now focus on $\sigma$ i.e. the variation in our survivals. Minimum of 0 possible with `dexp(1)`, but if it were to be actually set to 0, then there would be no variation between tanks and we converge on the complete pooling scenario. When sigma tends to infinity, we reach the no pooling scenario i.e. the fixed effects model i.e. that all the tanks are infinitely different from each other (completely **independent**). This is intuitive for us, the pooling that is. When we do experiments we consider this variation. The best $\sigma$ is the regularised one that combines information of $\alpha$ across tanks and the information in each tank. We learn the variation from the data itself.
+
+## Our inferred distribution
+
+So what does our population look like? The difference with the previous models is that instead of just having loads of lines in our posterior ($\alpha$s and $\beta$s), we now how a full distribution of our population, captured by $\bar{\alpha}$ and $\sigma$, which have been generated adaptively incorporating the variation in our data. So we need both of these bits of information to build a picture of our population. We need *correlated samples* from our posterior. Drawing our distributions of distributions, correlated pairs of $\bar{\alpha}$ and $\sigma$.
+
+```{r tadpole population, fig.width = 11, fig.height = 6}
+
+post <- extract.samples(m13.2)
+
+tad_abar <- post$a_bar[1:100]
+tad_sigma <- post$sigma[1:100]
+
+# Log odds iterating through with ggplot
+p <- ggplot() + xlim(-3,4) +
+   labs(x = "Log odds of survival", y = "Density") +
+   theme_bw(base_size = 13) + theme(panel.grid = element_blank()) 
+
+for(i in 1:100){
+   p <- p + stat_function(fun = dnorm, alpha = 0.3,
+                          args = list(mean = tad_abar[i], sd = tad_sigma[i]))
+}
+
+# Survival probability
+sim_surv <- inv_logit(rnorm(8000, post$a_bar, post$sigma)) # remember we made our alpha normal
+p_surv <- ggplot(data.frame(sim_surv), aes(x = sim_surv)) +
+   geom_density(fill = "blue", alpha = 0.2) +
+   scale_x_continuous(breaks = seq(0,1, by = 0.2),limits = c(0,1.111)) +
+   labs(x = "Probability of survival", y = "Density") +
+   theme_bw(base_size = 14) + theme(panel.grid = element_blank())
+
+grid.arrange(p, p_surv, ncol = 2)
+
+```
+
+## The accuracy advantage
+
+Multilevel models are foundational to navigating the stormy seas and tackle the challenges introduced in Chapter 7. They **are** Ulysses' magic compass. These shrinkage estimates are better. But here we can simulate the accuracy advantage here. We can simulate ponds here under our three assumptions of the future survival between our different ponds: 
+
+1. Complete Pooling - one global intercept to predict all the ponds- Underfit
+2. No Pooling - each pond doesn't tell us anything else about the others - Overfit
+3. Partial Pooling - Adaptively regularising prior - Multilevel model - Goldilocks
+
+So lets simulate some data from these three scenarios based on the same example experiment from before.
+
+```{r tadpole simulation}
+
+# Model parameters
+a_bar <- 1.5
+sigma <- 1.5
+nponds <- 60
+Ni <- as.integer(rep(c(5,10,25,35), each = 15))
+p_fullpool <- inv_logit(a_bar) ## the mean probability - assume this is the true value in a full pool
+
+# Simulate pond-level intercepts (log odds of survival for each pond)
+set.seed(5005)
+a_pond <- rnorm(nponds, mean = a_bar, sd = sigma)
+
+# Create data
+tadsim <- data.frame(pond = 1:nponds, Ni = Ni, 
+                     true_a = a_pond, 
+                     true_p = inv_logit(a_pond),
+                     p_fullpool = p_fullpool)
+
+# Simulate survivors from our true intercepts
+tadsim$Simsurv <- rbinom(nponds, prob = inv_logit(tadsim$true_a), 
+                         size = tadsim$Ni)
+
+# Compute no pooling survival estimates 
+tadsim$p_nopool <- tadsim$Simsurv / tadsim$Ni
+
+
+```
+
+```{r tadsim ulam, error = F, warning= F, results = F, mesage = F}
+# Model partial pooling estimates
+tadsim_list <- list(Si = tadsim$Simsurv, Ni = tadsim$Ni, pond = tadsim$pond)
+m13.3 <- ulam(alist(Si ~ dbinom(Ni,p),
+                    logit(p) <- a[pond],
+                    a[pond] ~ dnorm(a_bar,sigma),
+                    a_bar ~ dnorm(0,1.5), 
+                    sigma ~ dexp(1)),
+              data = tadsim_list,
+              chains = 4, cores = 4,
+              log_lik = TRUE)
+
+```
+
+```{r tadsim comparisons, fig.width= 15, fig.height = 6}
+
+# Partial pooling intercepts - pond specific probabilities
+tadsim_post <- extract.samples(m13.3)
+tadsim$p_partpool <- inv_logit(colMeans(tadsim_post$a))
+
+# Absolute probability error from three scenarios
+tadsim_sum <- tadsim %>% 
+   mutate(err_fullpool = abs(p_fullpool - true_p),
+          err_nopool = abs(p_nopool - true_p),
+          err_partpool = abs(p_partpool - true_p)) %>% 
+   dplyr::select(pond, Ni, starts_with("err")) %>% 
+   pivot_longer(starts_with("err"), names_prefix = "err_", 
+                names_to = "Scenario", values_to = "Error")
+
+tadsim_grsum <- tadsim_sum %>% 
+   group_by(Ni, Scenario) %>% 
+   summarise(mn = mean(Error))
+
+ggplot(tadsim_sum, aes(x = pond, y = Error, colour = Scenario)) +
+   geom_hline(data = tadsim_grsum, aes(yintercept = mn, colour = Scenario)) +
+   geom_point(size = 4, alpha = 0.6) +
+   scale_x_continuous(breaks = 1:60) +
+   facet_wrap(~Ni, ncol = 4, scales = "free_x") +
+   labs(x = "Pond", y = "Absolute Error") +
+   theme_bw(base_size = 14) +
+   theme(strip.background = element_blank(),
+         panel.grid = element_blank())
+
+```
+
+You can see that particularly at small sample sizes i.e. when there are differences in the density of data in our different groups, the absolute error for the partial pooling method with our regularising random effect is much reduced. Generally, partial pooling reduces the error relative to our true value of the survival probability.
+
+In essence, using multilevel models that have these adaptive, pooling priors is the best way to go.
+
+# Lecture 16 - Multilevel models 2
+
+### Multiple clusters and divergent transitions
+
+We can and in a lot of cases should have more than one type of cluster in our data for our random effects. Natural data is often pooled over both individuals **and** locations **and** time for example. We also need to investigate divergent transitions.
+
+Lets return to prosocial chimpanzees. Left or right pull, with the presence of a partner and and which side or our food is. Answer was no with our binomial model. Here we have multiple clusters - here it is a **cross classification model**. We have actors and experimental block as our clusters. Block effects are a terror in science. Actors have the handedness things, and our blocks are different in time. Not nested here.
+
+So what will our joint model look like here. Because we have hyperpriors for each of our intercept/offset terms (one for actor and one for block), the number of priors goes up a lot. The $\beta$ doesn't have an adaptive prior remember. However, generally it is just the same as before, but with these adaptive priors, and just priors all the way down.
+
+$$
+\begin{aligned}
+\text{LEFT}_{i} & \sim \operatorname{Binomial}\left(1, p_{i}\right) \\
+\operatorname{logit}\left(p_{i}\right) &=\alpha_{\text {ACTOR }[i]}+\gamma_{\text {BLOCK }[i]}+\beta_{\text {TREATMENT }[i]} \\
+\beta_{j} & \sim \text { Normal }(0,0.5), \text { for } j=1 . .4 \\
+\alpha_{j} & \sim \operatorname{Normal}\left(\bar{\alpha}, \sigma_{\alpha}\right), \text { for } j=1 . .7 \\
+\gamma_{j} & \sim \operatorname{Normal}\left(0, \sigma_{\gamma}\right), \text { for } j=1 . .6 \\
+\bar{\alpha} & \sim \operatorname{Normal}(0,1.5) \\
+\sigma_{\alpha} & \sim \text { Exponential }(1) \\
+\sigma_{\gamma} & \sim \text { Exponential }(1)
+\end{aligned}
+$$
+Our $j$s are the sublevels of each of our variables. The $\alpha$s are the varying intercepts for our actors (Chimpanzee), which is adaptive i.e. a random effect. We also have our varying intercept for our Block, which is also a random effect. However, we don't have a $\bar{\gamma}$ here, and instead set the mean to 0. Adding this would be redundant, because then you're using two terms to learn the intercept overall. This is still adaptive though, because we're controlling the variance.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
