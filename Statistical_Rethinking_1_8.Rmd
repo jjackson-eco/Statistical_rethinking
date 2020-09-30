@@ -1896,7 +1896,7 @@ So for Okham's razor, we prefer simplicity but also need accuracy, right? How mu
 
 Here **Ulysses** comes in as a metaphor.
 
-In greek mythology - A hero of Homer's Odyssey. Had to navigate a narrow straight, during which he had a choice of two hazards when voyaging. Either a giant whirlpool *Charybdis* that sucks in ships at sea or a many headed monster *Scylla* that gobbles up sailors on the cliffs. This is the metaphor for complexity vs. accuracy.
+In greek mythology - A hero of Homer's Odyssey. Ulysses is the Roman name for Odysseus. Had to navigate a narrow straight, the *Straight of Messina* between Sicily and Calabria, during which he had a choice of two hazards when voyaging. Either a giant whirlpool *Charybdis* that sucks in ships at sea or a many headed monster *Scylla* that gobbles up sailors on the cliffs. This is the metaphor for complexity vs. accuracy.
 
 > The many-headed beast of **overfitting** vs. the whirlpool of **underfitting**
 
