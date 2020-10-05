@@ -333,18 +333,287 @@ $$
 \sigma_{\gamma} & \sim \text { Exponential }(1)
 \end{aligned}
 $$
-Our $j$s are the sublevels of each of our variables. The $\alpha$s are the varying intercepts for our actors (Chimpanzee), which is adaptive i.e. a random effect. We also have our varying intercept for our Block, which is also a random effect. However, we don't have a $\bar{\gamma}$ here, and instead set the mean to 0. Adding this would be redundant, because then you're using two terms to learn the intercept overall. This is still adaptive though, because we're controlling the variance.
+Our $j$s are the sublevels of each of our variables. The $\alpha$s are the varying intercepts for our actors (Chimpanzee), which is adaptive i.e. a random effect. We also have our varying intercept for our Block, which is also a random effect. However, we don't have a $\bar{\gamma}$ here, and instead set the mean to 0. Adding this would be redundant, because then you're using two terms to learn the intercept overall. This is still adaptive though, because we're controlling the variance. Lets load.
+
+```{r chimp load}
+data("chimpanzees")
+chimpanzees$treatment <- 1 + chimpanzees$prosoc_left + 2*chimpanzees$condition
+chimp_list <- list(pulled_left = chimpanzees$pulled_left,
+                   actor = chimpanzees$actor,
+                   block_id = chimpanzees$block,
+                   treatment = as.integer(chimpanzees$treatment))
+```
+
+And lets build this model in `ulam`, good to put notes in saying what each of the sections of the model are.
+
+```{r chimp multiple clusters,  error = F, results = F, mesage = F}
+
+set.seed(13)
+m13.4 <- ulam(alist(
+               # The model 
+               pulled_left ~ dbinom(1, p),
+               logit(p) <- a[actor] + g[block_id] + b[treatment],
+   
+               # Simple prior
+               b[treatment] ~ dnorm(0,0.5),
+               
+               # Adaptive priors - our RE marker
+               a[actor] ~ dnorm(a_bar, sigma_a),
+               g[block_id] ~ dnorm(0, sigma_g),
+               
+               # Hyperpriors
+               a_bar ~ dnorm(0,1.5),
+               sigma_a ~ dexp(1),
+               sigma_g ~ dexp(1)),
+       data = chimp_list, chains = 4, cores = 4, log_lik = TRUE)
+
+```
+
+Notice that we have a warning about **Divergent Transitions** - more on this in a moment. Let's have a look at the output from this. This time we will look at the posterior distribution summary, and then the standard deviation terms for our two adaptive priors, $\sigma_{\alpha}$ and $\sigma_{\gamma}$ i.e. our random effect variances.
+
+```{r chimp precis, fig.height = 6.5, fig.width= 4}
+plot(precis(m13.4, depth = 2))
+```
+
+```{r chimp post, fig.height = 3, fig.width= 6}
+cpost <- extract.samples(m13.4)
+
+bind_rows(tibble(term = "Block", post = cpost$sigma_g),
+          tibble(term = "Actor", post = cpost$sigma_a)) %>% 
+   ggplot(aes(x = post, fill = term)) +
+   geom_density(alpha = 0.8) +
+   scale_fill_manual(values = c("firebrick", "cornflowerblue"), 
+                     name = "Varying\neffect") +
+   labs(x = "Standard deviation", y = "Density") +
+   theme_bw(base_size = 14) +
+   theme(panel.grid = element_blank())
+
+```
+
+We can see here that the $\gamma$ or g block effects are all very close to zero, and that the variance for our block effect is effectively 0, indicating that there isn't much variance across blocks. Actor 2's posterior is very wide, but all of these values are bunched up right at the boundary i.e. at 1, a[2] was a leftie.
+
+If we then compare this to a random effects model without or block effects, the number of parameters drops by 7, but the effective number of parameters doesn't drop as much as you would think. So it would seem that incorporating block doesn't have benefits, but actually didn't incur much of a cost either. The inference of the other effects remain similar in this case. Because of shrinkage. By aggressively regularising, we can have lots of parameters and still get similar inferences.
+
+## Even more clusters
+
+A bad definition of random effects is that random effects are not fixed by the experimenter. However, the source of the variance doesn't matter, we want the pooling for estimating benefits. If you care about better inference, use adaptive priors. Can use adaptive priors for the $\beta$ terms too, works pretty well too. The estimates don't change very much, we have lots of data for each treatment though.
+
+## Divergent Transitions
+
+These are your friend. Tell you that something is numerically inefficient in the Markov Chain. Can fix them. You can sometimes fix this with changing a parameter, but sometimes need to reparameterize.
+
+Imagine you're on a frictionless rollercoaster. Two forms of energy that have to be conserved. If the rollercoaster moves down it looses potential energy and gains kenetic, and then when it goes up it is the other way around. Our Markov chain is like this. A divergent transition is when the rollercoaster cart comes of the track. The Hamiltonian method calculates the energy in the system. We have transitions which are our sample paths, the movement of the particle around the rollercoaster of the posterior. If the energy at the end of a transition is not the same as that at the start, then it is **divergent**. Indicates an inaccurate approximation. Tends to happen in regions of strong curvature, where we pop off the track. **Happens a lot if parameters are conditional on other parameters too - Like in adaptive priors**. Hamiltonian is good because it tells us about this - other algorithms don't.
+
+We can display this with the **Devils Funnel**, a two parameter posterior with a model like this
+
+$$v \sim \text{Normal}(0,3)$$
+$$z \sim \text{Normal}(0, \exp v)$$
+Where for our two normal priors, the $z$ depends on the $v$. This creates a really steep curvature in the 2D parameter space for our posterior, and thus our transitions can become divergent, i.e. the rollercoaster can jump off the track. No single step size can help with this - need small step sizes when it is steep and bigger ones when it is shallow. Doesn't corrupt your chain but can mean it is less efficient, and can mean your ineffective samples make a bad guess of the posterior.
+
+Two ways to deal with it:
+
+1. Increase adapt-delta.
+2. Re-parametrise.
+
+But first check if you have left a prior out or something like that. Surprisingly common.
+
+## Non-centered parameterisation
+
+We can reparameterise by expressing our statistical model in another way, that is identical. Take this statistical model where we are investigating $\alpha$, which is given by the following distribution
+
+$$\alpha \sim \text{Normal}(\mu,\sigma)$$
+This is the centered parametrisation though, for which the distribution is dependent on more than one parameter. But we can rearrange this (identically) in a re-centered way
+
+$$\alpha = \mu + \beta$$
+$$\beta \sim \text{Normal}(0,\sigma)$$
+They are the same, just have taken $\mu$ out. Why do this though? Could go even further, and write this in a fully **non-centered** way, taking all parameter dependencies out.
+
+$$\alpha = \mu + z\sigma$$
+$$z\sim \text{Normal}(0,1)$$
+Although these are the same mathematically, our HMC algorithm sees a different geometry, a different shape, which helps a lot with our sampling. All this because we don't sample our parameters directly. Think of this like **standardisation** of our variables in the model. Why is it called centered? Just means that a distribution is conditional on one or more parameters. Fully **non-centered** means that we take all the conditioning out and put it in a linear model. In short we get many more effective samples from our Markov Chain if we do a non-centered parameterisation. 
+
+## Reparameterising our Chimp model
+
+So, with this information in mind we can repeat this for our chimp model, and do non-centered parameterisation so our adaptive priors are not dependent on other parameters. We do this by rewritting our linear model so that we have z-scores and sigmas inside of them. Each actor effect for example is some z-score for each chimp, multiplied by the variance of each chimp, and then our global intercept. This does not not look as intuitive, but is very useful. Our model will now look like this
+
+$$
+\begin{aligned}
+\text{LEFT}_{i} & \sim \operatorname{Binomial}\left(1, p_{i}\right) \\
+\operatorname{logit}(p_{i}) &= \bar{\alpha} + z_{\text {ACTOR }[i]}\sigma_{\alpha} + x_{\text {BLOCK }[i]}\sigma_{\gamma} +\beta_{\text {TREATMENT }[i]} \\
+\beta_{j} & \sim \text {Normal}(0,0.5), \text { for } j=1 . .4 \\
+z_{j} & \sim \operatorname{Normal}(0,1), \text { for } j=1 . .7 \\
+x_{j} & \sim \operatorname{Normal}(0,1), \text { for } j=1 . .6 \\
+\bar{\alpha} & \sim \operatorname{Normal}(0,1.5) \\
+\sigma_{\alpha} & \sim \text {Exponential}(1) \\
+\sigma_{\gamma} & \sim \text {Exponential}(1)
+\end{aligned}
+$$
+The varying effects are now standardised (see the 0,1 normals for our two z scores - x is just chosen for notation but are both z scores). This is a very important feature of varying effects models that we need to consider.
+
+And now for our Stan model. This will have posteriors that are the same, but there are some changes to our model code.
+
+```{r chimp non-centered,  error = F, results = F, mesage = F}
+set.seed(13)
+m13.4nc <- ulam(alist(
+               # The model 
+               pulled_left ~ dbinom(1, p),
+               logit(p) <- a_bar + z[actor]*sigma_a + z[block_id]*sigma_g + b[treatment],
+   
+               # Simple prior
+               b[treatment] ~ dnorm(0,0.5),
+               
+               # Adaptive priors - our RE marker
+               z[actor] ~ dnorm(0, 1),
+               x[block_id] ~ dnorm(0, 1),
+               
+               # Hyperpriors
+               a_bar ~ dnorm(0,1.5),
+               sigma_a ~ dexp(1),
+               sigma_g ~ dexp(1),
+               gq> vector[actor]:a <<- a_bar + z*sigma_a,
+               gq> vector[block_id]:g <<- x*sigma_g),
+       data = chimp_list, chains = 4, cores = 4, log_lik = TRUE)
+
+```
+
+The linear model has changed such that our parameters go in there, but this is just a direct translation of the model equation above. Notice in particular our additional `gp>` parts of our model code, which is telling stan to do some additional calculations for us. Namely, it is saying that we want to combine our output from $\bar{\alpha}$, $z$, and $\sigma_a$ to form our single parameter for our actor effect. The same goes for our block id effect.
+
+```{r, chimp nonc summary}
+precis(m13.4nc, depth = 2)
+```
+
+The benefits of this re-parameterisation:
+
+1. The chain runs faster.
+2. Large increase to effective sample number.
+3. No divergent transitions.
+
+## Posterior predictions
+
+Now we want to do some predictions using our multilevel models. The first thing we have to note is that because we have done partial pooling, and have shrinkage towards a population level mean, our predictions may not fit our sample as well as before. This will particularly be the case for clusters with a small sample size with a low density of data. 
+
+For actually doing the predictions themselves, the thing that the addition of random effects does is that it makes your predictions a little bit more subtle. You have to make some choices i.e. deciding what level of the model you are interested in reporting.
+
+> Are you interested in new clusters, or the same clusters?
+
+So, we have learned about some parameters both at the population level and at the cluster level. If you're interested in the same clusters that you have used, works very much like before i.e. with `sim` and `link`. Treat your varying effects as parameters and just push samples back through the model. This is if you want to predict for your sample essentially. Here you take into account your adaptive priors. For the chimpanzees, think of this where we predict for the `chimpanzees` data itself.
+
+However, we may also want to make predictions for new clusters, for which our additional information from the adaptive priors may not be as useful and instead we're just interested in the population-level mean. For the chimps, we would want to sample from new actors. And now Richard shows us three we have to decide whether we want to use:
+
+1. The average cluster - population mean
+2. The marginal of cluster - sample a bunch of individuals in our cluster and average over them incl. variation
+3. Sample of actors from posterior - Show your posterior of different individuals in the cluster as new lines.
+
+## Average actor
+
+Here we want to take the effect at the population mean or at $\bar{\alpha}$ in our chimpanzee example. Here, we just want to do a prediction that incorporates our population-level intercept and our treatment $\beta$ effects. So this is useful for looking at population-level treatment effects, things that are captured in our $\beta$ terms. I.e. this is often the average one you'll want for papers.
+
+```{r av actor chimp, fig.width= 7, fig.height = 5}
+# posterior samples
+post_chimp <- extract.samples(m13.4nc)
+
+# function to combine specific parts of the posterior (only treatment and a_bar here)
+p_link_abar <- function(treatment){
+   logodds = with(post_chimp, a_bar + b[,treatment])
+   return(inv_logit(logodds))
+}
+
+# predict for our four treatments
+pdat <- tibble(lab = c("Right prosocial\nNo partner", "Left prosocial\nNo partner", 
+               "Right prosocial\nPartner", "Left prosocial\nPartner"),
+       treatment = 1:4, mu = NA, lwr = NA, upr = NA) 
+
+for(i in 1:nrow(pdat)){
+   preds = p_link_abar(pdat$treatment[i])
+   pdat$mu[i] = mean(preds)
+   pdat$lwr[i] = PI(preds)[1]
+   pdat$upr[i] = PI(preds)[2]
+}
+
+# plot
+ggplot(pdat, aes(x = factor(lab, levels = lab), y = mu)) +
+   geom_errorbar(aes(ymax = upr, ymin = lwr), width = 0.03) +
+   geom_point(size = 3) +
+   lims(y= c(0,1)) +
+   labs(x = "", y = "Posterior proportion pulled left") +
+   theme_bw(base_size = 14)
+
+```
+
+## Marginal of actor - sample actors
+
+Now we want to sample a bunch of different chimpanzees and average over them, to incorporate the variation in the cluster as well as just the mean. We can then either just plot these different simulated actors, or summarise over them to get our marginalised effect, which includes more variation.
+
+```{r marg actor chimp, fig.width= 12, fig.height = 5}
+# Simulate different intercepts i.e. individuals in our cluster from the model parameters a_bar and sigma_a
+a_sim <- with(post_chimp, rnorm(length(post_chimp$a_bar), a_bar, sigma_a))
+
+# function to combine specific parts of the posterior (a_sim and treatment)
+p_link_asim <- function(treatment){
+   logodds = with(post_chimp, a_sim + b[,treatment])
+   return(inv_logit(logodds))
+}
 
 
+# 1. Marginal summary
+# predict for our four treatments
+pdat <- tibble(lab = c("Right prosocial\nNo partner", "Left prosocial\nNo partner", 
+               "Right prosocial\nPartner", "Left prosocial\nPartner"),
+       treatment = 1:4, mu = NA, lwr = NA, upr = NA) 
 
+for(i in 1:nrow(pdat)){
+   preds = p_link_asim(pdat$treatment[i])
+   pdat$mu[i] = mean(preds)
+   pdat$lwr[i] = PI(preds)[1]
+   pdat$upr[i] = PI(preds)[2]
+}
 
+# plot
+marg1 <- ggplot(pdat, aes(x = factor(lab, levels = lab), y = mu)) +
+   geom_errorbar(aes(ymax = upr, ymin = lwr), width = 0.03) +
+   geom_point(size = 3) +
+   lims(y= c(0,1)) +
+   labs(x = "", y = "Posterior proportion pulled left") +
+   theme_bw(base_size = 14)
 
+# Marginal actors
+marg2 <- data.frame(sim = 1:length(post_chimp$a_bar),
+              sapply(1:4, function(i) p_link_asim(i))) %>% 
+   pivot_longer(-sim, names_prefix = "X") %>% 
+   mutate(name = as.integer(name),
+           lab = rep(c("Right prosocial\nNo partner", "Left prosocial\nNo partner", 
+               "Right prosocial\nPartner", "Left prosocial\nPartner"),
+               times = length(post_chimp$a_bar))) %>% 
+   filter(sim <= 200) %>% 
+   ggplot(aes(x = lab, y = value, group = sim)) +
+   geom_line(alpha = 0.2, size = 1.3) +
+   lims(y= c(0,1)) +
+   labs(x = "", y = "Posterior proportion pulled left") +
+   theme_bw(base_size = 14)
 
+grid.arrange(marg1, marg2, ncol = 2)
 
+```
 
+## Post-stratification
 
+One final thing to mention is if we have non-representative samples of differing densities. We may want to account for this in our predictions even more. To do this, we can do **post-stratification**, where by we weight our estimates for each of our differing individuals (groups in our cluster) based on their sample size. This doesn't always work, particularly if there is causal links between non-representative samples and our outcome.
 
+# Lecture 17 - Adventures in Covariance
 
+### Extending multilevel models
+
+So far we have just been varying the intercepts i.e. the averages are differing by cluster. Pooling improves our estimates. Even though we bias our estimate, it is less biased actually i.e. better predictions out of sample. Any parameter in our model can be turned into a varying effect.
+
+However, we can extend this strategy to out **slopes** i.e. that the effect of our predictor varies by cluster. Again, you know this already but there are lots of good reasons why we might want to allow the slope to vary in a multilevel model. Do drug levels affect different people differently, after-school programmes don't work for everyone, different life-history trajectories for different individuals. *Average* effect misleading? Can be depending on the clusters - not every unit has the same response.
+
+Could treat them the same as the intercepts with adaptive pooling priors. Just shove another adaptive prior in our linear model equation. However we can do even better though by relating our intercepts to our slope. They have **covariance** with each other. Learning one gives you some info about the other, as you change the slope of the line the intercept changes (e.g. higher intercepts have smaller slopes). We want to have a single prior, which brings together **features** of the different units in our population that has correlation between these features i.e. the intercepts and the slopes. So we want to do correlated population pooling. This correlation structure lets us transfer information across these features.
+
+## Cafe Robot
+
+Lets demonstrate this with our cafe robot example again. Coffee waiting times between different cities again. Pool the waiting times across our clusters of different cities. However, now we want to know whether the coffee waiting times are different depending on the time of day as well. Our intercept is our average waiting time in the morning, and our slope is the change in waiting time from morning to afternoon. Will our slopes and intercepts be related? Yes. There is a negative correlation between average weight time in the morning (intercept) and our difference in morning and afternoon (slope). If you have higher morning waiting time, your slope (diff) is smaller because there isn't a saturation effect. This correlation gives us information, which we will do well by using. 
+
+Now we are 
 
 
 
