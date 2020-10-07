@@ -9,6 +9,8 @@ output:
 
 ---
 
+\usepackage{amsmath}
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -24,6 +26,8 @@ require(ggridges)
 require(rstan)
 require(rethinking)
 require(dagitty)
+require(MASS)
+require(ellipse)
 ```
 
 ***
@@ -77,9 +81,13 @@ Two basic models: 1. Dummy variable for each tank (done this previously) and 2. 
 
 Our basic model would be like this
 
-$$S_i \sim \operatorname{Binomial}(N_i, p_i)$$
-$$\operatorname{logit}(p_i) = \alpha_{\operatorname{TANK}[i]}$$
-$$\alpha_j \sim \operatorname{Normal}(0,1.5) \,\,\,\,\,\,\,\,\,\,\, \operatorname{for}j = 1..48$$
+$$
+\begin{aligned}
+S_i &\sim \operatorname{Binomial}(N_i, p_i) \\
+\operatorname{logit}(p_i) &= \alpha_{\operatorname{TANK}[i]} \\
+\alpha_j &\sim \operatorname{Normal}(0,1.5) \,\,\,\,\,\,\,\,\,\,\, \operatorname{for}j = 1..48 \\
+\end{aligned}
+$$
 Where our survival $S$ for each observation $i$ is given by a binomial distribution with probability $p$, and we estimate a different intercept for each tank $j$ (or pond). Only the data from the tank at hand informs the $\alpha$ from the tank. But surely we expect that survival is linked between.
 
 Let implement this then. First lets look at the data
@@ -605,7 +613,7 @@ One final thing to mention is if we have non-representative samples of differing
 
 So far we have just been varying the intercepts i.e. the averages are differing by cluster. Pooling improves our estimates. Even though we bias our estimate, it is less biased actually i.e. better predictions out of sample. Any parameter in our model can be turned into a varying effect.
 
-However, we can extend this strategy to out **slopes** i.e. that the effect of our predictor varies by cluster. Again, you know this already but there are lots of good reasons why we might want to allow the slope to vary in a multilevel model. Do drug levels affect different people differently, after-school programmes don't work for everyone, different life-history trajectories for different individuals. *Average* effect misleading? Can be depending on the clusters - not every unit has the same response.
+However, we can extend this strategy to our **slopes** i.e. that the effect of our predictor varies by cluster. Again, you know this already but there are lots of good reasons why we might want to allow the slope to vary in a multilevel model. Do drug levels affect different people differently, after-school programmes don't work for everyone, different life-history trajectories for different individuals. *Average* effect misleading? Can be depending on the clusters - not every unit has the same response.
 
 Could treat them the same as the intercepts with adaptive pooling priors. Just shove another adaptive prior in our linear model equation. However we can do even better though by relating our intercepts to our slope. They have **covariance** with each other. Learning one gives you some info about the other, as you change the slope of the line the intercept changes (e.g. higher intercepts have smaller slopes). We want to have a single prior, which brings together **features** of the different units in our population that has correlation between these features i.e. the intercepts and the slopes. So we want to do correlated population pooling. This correlation structure lets us transfer information across these features.
 
@@ -613,14 +621,396 @@ Could treat them the same as the intercepts with adaptive pooling priors. Just s
 
 Lets demonstrate this with our cafe robot example again. Coffee waiting times between different cities again. Pool the waiting times across our clusters of different cities. However, now we want to know whether the coffee waiting times are different depending on the time of day as well. Our intercept is our average waiting time in the morning, and our slope is the change in waiting time from morning to afternoon. Will our slopes and intercepts be related? Yes. There is a negative correlation between average weight time in the morning (intercept) and our difference in morning and afternoon (slope). If you have higher morning waiting time, your slope (diff) is smaller because there isn't a saturation effect. This correlation gives us information, which we will do well by using. 
 
-Now we are 
+## The 2-dimensional Gaussian
 
+In previous priors, we have been using independent Gaussian distributions. However, even in our quadratic approximation examples (which feel like a long time ago) we have also been using a **multivariate Gaussian** distribution to capture our variance-covariance matrix. This multivariate Gaussian distribution would capture how each parameter's posterior probability relates to others in our model. The goal here is to extend this i.e. explicitly add more info to this matrix, when we specify the model itself to capture different types of varying effect.
 
+Now we are going to assign a **2-dimensional Gaussian** distribution for both the intercepts and slopes. This works in the same way as $\text{Normal}(\mu,\sigma)$ where we need a mean and standard deviation for our distribution. Here, we do the same thing except combine info from our slope and intercept and make this multidimensional by using:
 
+1. A **vector of means**
+2. The **variance-covariance matrix**
 
+Our vector of means is just our average intercept and average slope. The variance-covariance matrix is just the multidimensional analog of $\sigma$ i.e. a matrix where we have the spread for all of our different parameters, and takes the following form
 
+$$
+\begin{pmatrix}
+\sigma^{2}_{\alpha} & \sigma_{\alpha}\sigma_{\beta}\rho \\
+\sigma_{\alpha}\sigma_{\beta}\rho & \sigma^{2}_{\beta}
+\end{pmatrix}.
+$$
 
+Here, the $\sigma$s indicate the variance of our intercept $\alpha$ and slope $\beta$ terms, respectively. The $\rho$ gives the correlation between the intercept and slope. Thus, the diagonal values are the variances in our slope and intercept, and our off-diagonals are their covariances, which is their standard deviations multiplied together and multiplied by their correlation. In general following this, the covariance of two variables $x$ and $y$ is defined as
 
+$$\text {cov}(xy) = \sigma_x\sigma_y\rho_{xy}$$
+
+The covariance of two variables more generally is specifically defined as *the difference in the average product and the product of the averages*. And the variance is just a special case of this where the two variables are the same thing. Based on that, we can combine this information to define the covariance of our two variables, by combining with our additional $\rho$ which ensures that covariance is higher when our two variables are similar. This variance-covariance matrix will of course get bigger as we have more parameters that interact with each other.
+
+## Matrix multiplication
+
+Matrix comes from the word womb/mother in latin. They are just for notation. Remember your matrix multiplication. Nice easy way to remember this from Richard - For the dimension position (e.g. first row first column) of your resulting matrix, you multiply across the row of the first matrix and down the column of the second matrix.
+
+$$
+\begin{pmatrix} A & B \\ C & D \end{pmatrix} \times \begin{pmatrix} a & b \\ c & d \end{pmatrix} = 
+\begin{pmatrix} Aa + Bc, & Ab + Bd \\  Ca + Dc, & Cb + Dd \end{pmatrix}
+$$
+
+## Cafe robot simulation
+
+Lets simulate our coffee robots results to see how this would work.
+
+```{r cafe robot sim, fig.width = 5, fig.height = 5}
+## 1. Simulate our population of cafes
+# 1a. Average parameters
+a       <- 3.5    # average morning wait time
+b       <- (-1)   # average difference between morning and afternoon
+sigma_a <- 1      # std dev in intercepts
+sigma_b <- 0.5    # std dev in slopes
+rho     <- (-0.7) # correlation between slopes and intercepts
+N_cafes <- 20     # we simulate 20 cafes
+
+# 1b. Our multivariate normal of effects
+Mu     <- c(a,b)               # the vector of means
+cov_ab <- sigma_a*sigma_b*rho  # the covariance of our parameters
+Sigma  <- matrix(c(sigma_a^2, cov_ab, cov_ab, sigma_b^2),
+                 ncol = 2)     # the variance-covariance matrix
+
+# 1c. More useful way to build vcov matrix - needed later
+sigmas <- c(sigma_a, sigma_b)                  # our std devs
+Rho    <- matrix(c(1,rho,rho,1), nrow = 2)     # our correlation matrix
+Sigma <- diag(sigmas) %*% Rho %*% diag(sigmas) # matrix multiplication of our separate components
+
+# 1d. Simulate the properties of 20 cafes from the multivariate normal
+set.seed(5)
+vary_effects <- mvrnorm(N_cafes, Mu, Sigma) # gives us the intercepts and slopes, respectively
+a_cafe       <- vary_effects[,1] 
+b_cafe       <- vary_effects[,2] 
+
+# 1e. Visualise our cafes
+plot(a_cafe, b_cafe, col= rangi2, 
+     xlab = "Waiting time (intercept)",
+     ylab = "Difference between morning and afternoon (slope)")
+for(l in c(0.1, 0.3, 0.5, 0.8, 0.99)){
+   lines(ellipse(Sigma, centre = Mu, level = l), col = col.alpha("black"))
+}
+
+## 2. Simulate observations of different waiting times from each cafe
+set.seed(22)
+N_visits  <- 10 
+afternoon <- rep(0:1, N_visits*N_cafes/2)
+cafe_id   <- rep(1:N_cafes, each = N_visits)
+mu        <- a_cafe[cafe_id] + b_cafe[cafe_id]*afternoon # mean of wait time
+sigma_cf  <- 0.5                                         # std within cafe
+wait      <- rnorm(N_visits*N_cafes, mu, sigma_cf)       # simulated waiting times
+cafdat    <- data.frame(cafe_id = cafe_id, afternoon = afternoon, wait = wait) 
+
+# 2a. look at the simulated data - colours are our different cafes
+ggplot(cafdat, aes(x = factor(afternoon), y = wait, 
+                   colour = factor(cafe_id))) +
+   geom_point(show.legend = F, size = 4, alpha = 0.6) +
+   labs(x = "Afternoon?", y = "Waiting time (mins)") +
+   theme_bw(base_size = 13) + theme(panel.grid = element_blank())
+
+```
+
+## The varying slopes model
+
+With this simulated data we can now build our rather big looking varying slopes model.
+
+$$
+\begin{aligned}
+\text{WAIT}_i &\sim \text{Normal}(\mu_i, \sigma) \\
+\mu_i &= \alpha_{\text{CAFE}[i]} + \beta_{\text{CAFE}[i]}\text{AFTERNOON}_i \\
+\begin{bmatrix} \alpha_{\text{CAFE}} \\ \beta_{\text{CAFE}} \end{bmatrix} &\sim \text{MVNormal}\left(\begin{bmatrix} \alpha \\ \beta \end{bmatrix}, \textbf{S}\right) \\
+\textbf{S} &= \begin{pmatrix} \sigma_{\alpha} & 0 \\ 0 & \sigma_{\beta} \end{pmatrix} \textbf{R} 
+\begin{pmatrix} \sigma_{\alpha} & 0 \\ 0 & \sigma_{\beta} \end{pmatrix} \\
+\alpha &\sim \text{Normal}(5,2) \\
+\beta &\sim \text{Normal}(-1,0.5) \\
+\sigma &\sim \text{Exponential}(1) \\
+\sigma_{\alpha} &\sim \text{Exponential}(1) \\
+\sigma_{\beta} &\sim \text{Exponential}(1) \\
+\textbf{R} &\sim \text{LKJcorr}(2) \\
+\end{aligned}
+$$
+Lets go through this beast. Outcome is the wait time which is normally distributed. For this we have our linear model on the mean, with varying intercepts and slopes for each cafe. The slope is the difference between morning and afternoon. Then we have a **multivariate prior**, this is our two dimensional adaptive prior. For each cafe there are two parameters, and they are distributed with a multivariate normal with a mean of the vector of means (average slope and intercept), and the variance-covariance matrix **S**. Then we have four fixed or non-adaptive priors here, which give the $\alpha$, $\beta$ and $\sigma$s. 
+
+### LKJ prior
+
+Finally we have a new prior, which is our correlation matrix prior. These are trickier because the values constrain each other inside the matrix. Can't just pick arbitrary correlations. So, we use the LKJ family of priors. Lewandowski, Kurowicka and Joe. They call it the onion method. It has one shape parameter $\eta$, which describes the concentration or dispersion from the identity matrix (zero correlations everywhere and 1s in the diagonal). If it's really big there is little correlation, if it's smaller then the correlations are flatter.
+
+Now we can fit the model.
+
+```{r cafe slopes ulam, error = F, warning= F, results = F, mesage = F}
+m14.1 <- ulam(alist(wait ~ normal(mu, sigma),
+                   mu <- a_cafe[cafe_id] + b_cafe[cafe_id]*afternoon,
+                   c(a_cafe, b_cafe)[cafe_id] ~ multi_normal(c(a,b), Rho, sigma_cafe),
+                   a ~ normal(5,2),
+                   b ~ normal(-1,0.5),
+                   sigma_cafe ~ exponential(1),
+                   sigma ~ exponential(1),
+                   Rho ~ lkj_corr(2)),
+              data = as.list(cafdat), chains = 4, cores = 4)
+```
+
+Lets have a look at the posterior for our correlation matrix $\textbf{R}$.
+
+```{r cafe rho post}
+post_cafe <- extract.samples(m14.1)
+dens(post_cafe$Rho[,1,2])
+```
+ 
+Here we have looked at the value of Rho in the first row and the second column, which is the correlation between the intercept and the slope (which we set at -0.7 in the simulation). This is the same value as row 2, column1. Note that here we dealing with matrix slices, so there are three positions i.e. `post$R[x,y,z]` or `[sample,row,column]`. This is a distribution of matrixes. 
+
+Now we get posterior shrinkage, but in two dimensions, for both the slope and the intercept. We'll compute the raw unpooled estimates from the data directly, and extract the cafe-specific posterior values for them too:
+
+```{r cafe shrinkage, fig.width = 5, fig.height = 5}
+## Unpooled estimates, just the means of the raw data vectors
+a1 <- sapply(1:N_cafes, function(i) mean(wait[cafe_id == i & afternoon == 0]))
+b1 <- sapply(1:N_cafes, function(i) mean(wait[cafe_id == i & afternoon == 1])) - a1
+
+## Posterior samples
+a2 <- apply(post_cafe$a_cafe, 2, mean)
+b2 <- apply(post_cafe$b_cafe, 2, mean)
+
+## Have to compute the inferred posterior model parameters for our posterior contours
+Mu_est <- c(mean(post_cafe$a), mean(post_cafe$b))
+rho_est <- mean(post_cafe$Rho[,1,2])
+sa_est <- mean(post_cafe$sigma_cafe[,1])
+sb_est <- mean(post_cafe$sigma_cafe[,2])
+cov_ab <- sa_est*sb_est*rho_est
+Sigma_est <- matrix(c(sa_est^2, cov_ab,cov_ab, sb_est^2),
+                    ncol = 2)
+
+## Shrinkage plot
+plot(a1, b1, xlab = "Intercept", ylab = "Slope", pch =16, col = rangi2, 
+     ylim = c(min(b1)-0.1, max(b1) + 0.1), xlim = c(min(a1)-0.1, max(a1) + 0.1))
+points(a2,b2, pch = 1)
+for(i in 1:N_cafes) lines(c(a1[i],a2[i]), c(b1[i], b2[i]))
+for(l in c(0.1,0.3,0.5,0.8,0.99))
+   lines(ellipse(Sigma_est, centre = Mu_est, level = l, 
+                 col = col.alpha("black", 0.2),))
+
+```
+
+We get this cool shrinkage towards the centre of the inferred mean of the posterior for our slope and intercept. The raw data in blue is shrunk in our posterior estimates towards the mean. You can also plot the wait times on the outcome scale, giving the morning vs. afternoon wait time for coffee, by computing the equation for your $\mu$. This is **multi-dimensional shrinkage**, which pools information across intercepts and slopes. It depends on the correlations between our effects.
+
+# Lecture 18 - Adventures in Covariance 2
+
+### More covariance structures
+
+## Many effects, many clusters
+
+So now we have done a simulated example of the varying slopes model, lets apply this to some real data i.e. lets return to the left-pulling example in the chimps. Now we want to have a varying slope model, where our effect of treatment is able to vary by our actors, as well as by block (which isn't really justified but hey ho). Our linear model section looks like this now:
+
+$$
+\begin{aligned}
+\text{LEFT}_i &\sim \text{Binomial}(1, p_i) \\
+\text{logit}(p_i) &= \gamma_{\text{TREATMENT}[i]} + \alpha_{\text{ACTOR}[i],\text{TREATMENT}[i]} + \beta_{\text{BLOCK}[i],\text{TREATMENT}[i]}
+\end{aligned}
+$$
+We have our average treatment effects given by $\gamma$, and then two varying effects where those treatment effects depend on our actor or block. So for our $\alpha$ term for example, this is a parameter for the deviation of actor from the mean effect of treatment in a particular treatment. Each actor gets four parameters for $\alpha$. So there are 76 parameters in total.
+
+Our adaptive priors this time are 4-dimensional, because each of our $j$ actors and blocks can vary in the way that treatment effects the probability of a left pull. We want a vector of four treatment effects for each actor. So these priors look like this
+
+$$
+\begin{aligned}
+\begin{bmatrix} \alpha_{j,1} \\ \alpha_{j,3} \\ \alpha_{j,3} \\ \alpha_{j,4} \end{bmatrix} &\sim \text{MVNormal} \left(\begin{bmatrix} 0 \\ 0 \\ 0 \\ 0 \end{bmatrix}, \textbf{S}_{\text{ACTOR}} \right) \\
+\begin{bmatrix} \beta_{j,1} \\ \beta_{j,2} \\ \beta_{j,3} \\ \beta_{j,4} \end{bmatrix} &\sim \text{MVNormal} \left( \begin{bmatrix} 0 \\ 0 \\ 0 \\ 0 \end{bmatrix}, \textbf{S}_{\text{BLOCK}} \right)
+\end{aligned}
+$$
+
+Our means for the multi-dimensional Gaussian priors are 0 because we already have our mean effects of the treatments kept in our $\gamma$ term. 
+
+We could now fit this with our standard `ulam` procedure, specifying our multi-dimensional Gaussian priors and covariance matrices that vary by actor for each treatment. This would look like this
+
+```
+m14.1 <- ulam(alist(
+                   # The linear model part
+                   pulled_left ~ dbinom(1, p),
+                   logit(p) <- g[treatment] + alpha[actor,treatment] + beta[block_id, treatment],
+                   
+                   # The adaptive multi-dimensional priors
+                   vector[4]:alpha[actor] ~ multi_normal(0, Rho_actor, sigma_actor),
+                   vector[4]:beta[block_id] ~ multi_normal(0, Rho_block, sigma_block),
+                   
+                   # The fixed priors
+                   g[treatment] ~ dnorm(0,1),
+                   Rho_actor ~ dljkcorr(4),
+                   sigma_actor ~ dexp(1),
+                   Rho_block ~ dljkcorr(4),
+                   sigma_block ~ dexp(1)),
+              data = chimp_list, chains = 4, cores = 4, log_lik = TRUE)
+```
+
+## Non-centered parameterisation
+
+However, guess what, there are divergent transitions here, because we have got parameters within our multi-dimensional adaptive priors. We want to reparameterise and factor our these dependencies like before to improve our HMC output. Recall that this is for efficiency purposes, not for inference - given enough time it should be the same estimates. However, to do this for a multi-dimensional prior is much more tricky. We have to use something called **Cholesky factors** which enable us to factor our parameters out. This was a guy who invented this trick, was an artillery officer in WW1, but he had made notes on the battlefield about systems linear equations. Remember we want to get z scores for our factoring out our parameters. Cholesky figured out a way to maintain a correlation structure between two independent sets of z scores with a particular transformation using the correlation you desire between them. Don't need to know the mechanics of it, just that it works for our matrices. So lets do it
+
+```{r chimp varying effects full non-centered, error = F, results = F, mesage = F}
+m14.3 <- ulam(alist(
+                   # The linear model part
+                   pulled_left ~ dbinom(1, p),
+                   logit(p) <- gamma[treatment] + alpha[actor,treatment] + beta[block_id, treatment],
+                   
+                   # The adaptive multi-dimensional priors - non-centered
+                   transpars> matrix[actor,4]:alpha <- 
+                      compose_noncentered(sigma_actor, L_Rho_actor, z_actor),
+                   transpars> matrix[block_id,4]:beta <- 
+                      compose_noncentered(sigma_block, L_Rho_block, z_block),
+                   matrix[4,actor]:z_actor ~ dnorm(0,1),
+                   matrix[4,block_id]:z_block ~ dnorm(0,1),
+                   
+                   # The fixed priors
+                   gamma[treatment] ~ dnorm(0,1),
+                   vector[4]:sigma_actor ~ dexp(1),
+                   cholesky_factor_corr[4]:L_Rho_actor ~ lkj_corr_cholesky(2),
+                   vector[4]:sigma_block ~ dexp(1),
+                   cholesky_factor_corr[4]:L_Rho_block ~ lkj_corr_cholesky(2),
+                   
+                   # convert back to ordinary correlation matrices from the cholesky ones
+                   gq> matrix[4,4]:Rho_actor <<- Chol_to_Corr(L_Rho_actor),
+                   gq> matrix[4,4]:Rho_block <<- Chol_to_Corr(L_Rho_block)
+                   ),
+              data = chimp_list, chains = 4, cores = 4, log_lik = TRUE)
+```
+
+You can see we didn't have any divergent transitions and that we have a really healthy number of effective samples. The full `precis`, which now goes to a depth of 3 because of our matrixes has a lot of samples, has all of our 76 parameters: 4 average treatment effects $\gamma$, 4x7 varying effects on actor, our $\alpha$ terms, 4x6 varying effects on block, our $\beta$ terms, 8 standard deviations $\sigma$ and then 12 *free* correlation parameters from **R** (remember the two halves of our matrix are identical, and the diagonals are just 1).
+
+If we inspect the regularising variance priors, our `sigma` values, we can see that especially for block the regularisation has been really strong, with little variance in treatments across our blocks. This indicates that the shrinkage is pretty big.
+
+Now lets pull out our correlation matrix Rho, which tells us the correlation between treatments across our actors i.e. will one chimp just pull left for all the different treatments because of their individual variation i.e. handedness, or does it vary based on the treatment.
+
+```{r chimp Rho plots, fig.width= 12, fig.height= 6}
+
+## Actor
+actor_rho_plot <- tibble(par = rownames(precis(m14.3, pars = "Rho_actor", depth = 3)),
+                         rho = precis(m14.3, pars = "Rho_actor", depth = 3)$mean) %>% 
+   mutate(treatment1 = rep(c("Right prosocial\nNo partner", "Left prosocial\nNo partner", 
+               "Right prosocial\nPartner", "Left prosocial\nPartner"), each = 4),
+          treatment2 = rep(c("Right prosocial\nNo partner", "Left prosocial\nNo partner", 
+               "Right prosocial\nPartner", "Left prosocial\nPartner"), times = 4)) %>% 
+   ggplot(aes(x = treatment1, y = treatment2)) +
+   geom_tile(aes(fill = rho), show.legend = F) +
+   geom_text(aes(label = round(rho,2))) +
+   scale_fill_viridis_c(option = "B",begin = 0.1, end = 0.8,limits = c(-1,1)) +
+   scale_x_discrete(expand = c(0,0)) +
+   scale_y_discrete(expand = c(0,0)) +
+   labs(x = NULL, y = NULL, 
+        title = "Actors") +
+   theme_bw(base_size = 14)
+
+## Block
+block_rho_plot <- tibble(par = rownames(precis(m14.3, pars = "Rho_block", depth = 3)),
+                         rho = precis(m14.3, pars = "Rho_block", depth = 3)$mean) %>% 
+   mutate(treatment1 = rep(c("Right prosocial\nNo partner", "Left prosocial\nNo partner", 
+               "Right prosocial\nPartner", "Left prosocial\nPartner"), each = 4),
+          treatment2 = rep(c("Right prosocial\nNo partner", "Left prosocial\nNo partner", 
+               "Right prosocial\nPartner", "Left prosocial\nPartner"), times = 4)) %>% 
+   ggplot(aes(x = treatment1, y = treatment2)) +
+   geom_tile(aes(fill = rho)) +
+   geom_text(aes(label = round(rho,2))) +
+   scale_fill_viridis_c(option = "B",begin = 0.1, end = 0.8,limits = c(-1,1)) +
+   scale_x_discrete(expand = c(0,0)) +
+   scale_y_discrete(expand = c(0,0)) +
+   labs(x = NULL, y = NULL, 
+        title = "Block") +
+   theme_bw(base_size = 14)
+
+grid.arrange(actor_rho_plot, block_rho_plot, ncol = 2, widths = c(5,6))
+
+```
+
+You can see very clearly that our actors were very correlated with themselves across our 4 treatments, where as our blocks were not correlated across treatments (good thing). This suggests that the chimps are very individual, and points at the handedness effects that we have seen throughout the course.
+
+Now finally we will do some posterior predictions for this and see how our model fits the raw data again. We're going to do predictions kind of ignoring block by setting it at 5 (doesn't matter as the Rhos were all 0 more or less). We're going to do **retrodictive prediction** i.e. fitting to the same clusters that we observed so using `link`.
+
+```{r post pred chimp, fig.width = 14, fig.height= 5}
+pred_dat <- expand.grid(actor = 1:7, treatment = 1:4, block_id = 5)
+
+pred <- link(m14.3,data = pred_dat)
+p_mu <- apply(pred, 2, mean)
+p_ci <- apply(pred, 2, PI)
+
+# raw data in right format
+rawpoints <- chimpanzees %>% 
+   group_by(actor, treatment) %>% 
+   summarise(prop = mean(pulled_left)) %>% 
+   ungroup() %>% 
+   mutate(chimp = paste0("Chimp ", actor),
+          prosocial = if_else(treatment %in% c(1,3) == TRUE, "right", "left"),
+          partner = if_else(treatment %in% 1:2 == TRUE, "absent", "present"))
+   
+# The plot
+pred_dat %>% 
+   mutate(mu = p_mu, lwr = p_ci[1,], upr = p_ci[2,],
+          chimp = paste0("Chimp ", actor),
+          prosocial = if_else(treatment %in% c(1,3) == TRUE, "right", "left"),
+          partner = if_else(treatment %in% 1:2 == TRUE, "absent", "present")) %>% 
+   ggplot(aes(x = partner, y = mu, group = interaction(chimp, prosocial), shape = prosocial, colour = factor(chimp))) +
+   geom_point(aes(colour = NULL, y = prop), data = rawpoints, size = 4) +
+   geom_hline(yintercept = 0.5, linetype = "dashed") +
+   geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0, show.legend = F) +
+   geom_point(size = 4) + geom_line(show.legend = F) +
+   guides(colour = "none", shape = guide_legend("Prosocial\nchoice")) +
+   labs(x = "Partner", y = "Mean posterior probability") +
+   facet_grid(~chimp) +
+   theme_bw(base_size = 13) +
+   theme(panel.grid = element_blank())
+```
+The black points are our raw data and the coloured points are our posterior predictions. You can see we do a much better job of fitting the individual-level variation in pulling left in this sample.
+
+## Multilevel horoscopes
+
+Lots of Richards job is people coming to him with data tables and asking what kind of model to fit (familiar). Without asking more questions and really understanding the causal design of the questions of each researcher, his answers become quite horoscopic. A proper analysis needs things outside of the data itself. But, we can have Richards default - horoscopic advice:
+
+* **Think about the causal model first**
+* Begin with an empty model with just varying intercepts on the cluster(s) you're interested in
+* Standardise your predictors
+* Regularise your priors with simulation
+* Add in predictors and vary slopes
+* Compare competitive models (with the tools outlined)
+* Drop varying effects with tiny sigma values
+* Average and marginal predictions
+* **Domain knowledge trumps all**
+
+## More multivariate models
+
+With these covariance matrixes as our basis we can do lots and lots of different model types using these multivariate Gaussian distributions. Can model unobserved confounds (instrumental variables), social relations and networks, factor analysis, animal models, phylogenetic regression, spatial autocorrelation. 
+
+*In this next section, I am not going to take full coding notes. Just brief ones*
+
+## Instrumental variables
+
+Remember the back-door criterion, we don't want to just condition on everything. But sometimes back door criterion tells us that we can't remove criterion. Unobserved stuff gets ya in the end, and there are lots of unmeasured confound. But, using instrumental variables we can get around this really well. 
+
+Educations effect on wages, does education increase your wages? Want to know the arrow from E to W. But there are lots of Unobserved things that influence both E and W. Like Laziness. This is the case in a lot of systems. Can't condition on U as it is unobserved. 
+
+An **instrumental variable** is one that influences the exposure but not the outcome. Birthday position in the year in this example (Q). When you were born affects how much education you consume. Born early in the year you consume less education. Age is social and randomly cut-off in January, calendar is Roman. Social age can be very different to someone the same age. In North America, if you were born in January you will have had less of your biological life at school. So more likely to drop out. 
+
+Because this instrumental variable only affects one of our variables of interest, it can be very useful. We have a kind of natural experiment. Month of year interacts with social education system. Adjusts education **independently** of our unobserved confound U. So month of birth is a valid instrument. 
+
+```{r DAG education, fig.width= 4, fig.height=2}
+dag_ew <- dagitty("dag{Q -> E; E -> W; U -> E; U -> W}")
+coordinates(dag_ew) <- list(x = c(Q = 0, E = 1, U = 2, W = 3), 
+                              y = c(Q = 0, E = 2, U = 0, W = 2))
+drawdag(dag_ew)
+```
+
+When we add Q to our DAG it makes E a collider variable. So if we condition on E and we know Q then we get causal information from U even though it is unobserved. How does this work though??? U generates a correlation of E and W, but Q enables us to assess the original correlation of interest. This is like a finding out effect.
+
+Imagine people born in the first quarter (Q1) consume 10 years of education on average. If someone was born in Q1 and actually consumed 12 years of education, this tells us that they must have some increase in the thing that is unobserved meaning they did better than average e.g. not as lazy as we thought or whatever it might be. This is like an experimental manipulation. A *Natural Experiment*. Nature has manipulated our system, but only partly - not fully. But does affect people. Many actual experiments are like this, treatment in epidemiology is a choice.
+
+Say we do a simulation where W isn't affected by E, but both are dependent on our U, and E is also affected quite strongly by Q. If we simulate this data and then fit two Bayesian regressions, the first to estimate the effect just of E on W, and the second to add in Q to the causal salad to see how it in turn affects W, we get a bit of a causal meltdown. E has a positive effect on W, Q has a strong negative effect on W, and when we incorporate Q it makes the effect from E to W even stronger. This is **bias amplification** at its finest.
+
+*Now is the really crazy part*. How do we sort this out and use the instrumental variable correctly? We define E and W as coming from the same multi-variate normal distribution, as they have done in our generative model (both come from U). They habe their means $\mu$ and a covariance matrix *S*
+
+$$
+\begin{aligned}
+\begin{pmatrix} W_i \\ E_i \end{pmatrix} &\sim \text{MVNormal}\left(\begin{pmatrix} \mu_{W,i} \\ \mu_{E,i} \end{pmatrix}, \textbf{S} \right)\\
+\mu_{W,i} &= \alpha_W + \beta_{EW}E_i \\
+\mu_{E,i} &= \alpha_E + \beta_{QE}Q_i \\
+\end{aligned}
+$$
+We have two linear models here, one for E and one for W, with which we estimate our effect of Education on Wages, and the effect of Quarter on Education. Then, in the covariance matrix **S** we account for our impact of U on both i.e. their correlation with each other.
 
 
 
