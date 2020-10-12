@@ -1012,6 +1012,218 @@ $$
 $$
 We have two linear models here, one for E and one for W, with which we estimate our effect of Education on Wages, and the effect of Quarter on Education. Then, in the covariance matrix **S** we account for our impact of U on both i.e. their correlation with each other.
 
+## Social relations model
+
+Context here is that we are interested in dyadic interactions between units, like pairs of individuals in a social network. How can we separate behaviour from specific dyadic relationships. For this we need to specify these dyadic relationships between units, but these are given by data in the model we want (not some additional covariance matrix like phylogenetic). This requires a specific covariance structure. Often called social relation models.
+
+Example from Nicaraguan Households and the gifts that are given between households. Usually gifts of meat. 25 households, 300 dyads. Each row is a dyad and the gifts that flow between that Dyad. Gifts flow in either direction. Just raw correlation is 0.25 between A->B and B->A. But this is not the way to measure reciprocity. This includes other dyadic specific effects as well as just reciprocity such as kinship, distance etc. Number of gifts given follows a poisson distribution, we can think of the model for gifts from A to B as.
+
+$$
+\begin{aligned}
+y_{A\rightarrow B} &\sim \text{Poisson}(\lambda_{AB}) \\
+\log \lambda_{AB} &= \alpha + g_{A} + r_{A} + d_{AB}
+
+\end{aligned}
+$$
+
+Where the log rate of gift giving from A to B is given by a linear model, which has an average gift giving $\alpha$, a giving offset for household A $g$, a receiving offset for household A $r$, and dyadic interactions between A and B $d$. The giving offset is individual houses givingness, some households are really giving. The $g$ and $r$ are varying effects for each household A. Then our **reciprocity** is the dyadic interactions between A and B. We have the same thing repeated for our effect the other way i.e. B to A. But these two things are related to each other. So there are **Two linear models**. 
+
+We have two covariance matrices in this model, which link together the two linear models. The first is for the giving and receiving for the household A (denoted with $i$) (those give more probably receive more generally). No means because we have the average gift giving term already ($\alpha$). The second is the dyadic covariance between household A $i$ and household B $j$. The covariance matrix here is special because it only has one variance term in it i.e. $\sigma_d$, which is because the matrix is symmetrical. The labels A and B are arbitrary, because it is just the dyadic correlation, same in both directions.
+
+
+$$
+\begin{aligned}
+\begin{bmatrix} g_i \\ r_i \end{bmatrix} &\sim \text{MVNormal}\left(\begin{bmatrix} 0 \\ 0 \end{bmatrix}, \begin{pmatrix}
+\sigma^{2}_g & \sigma_g\sigma_r\rho_{gr} \\
+\sigma_g\sigma_r\rho_{gr} & \sigma^{2}_r
+\end{pmatrix}\right) \\
+\begin{bmatrix} d_{ij} \\ d_{ji} \end{bmatrix} &\sim \text{MVNormal}\left(\begin{bmatrix} 0 \\ 0 \end{bmatrix}, \begin{pmatrix}
+\sigma^{2}_d & \sigma^{2}_d\rho_{d} \\
+\sigma^{2}_d\rho_{d} & \sigma^{2}_d
+\end{pmatrix}\right) \\
+\end{aligned}
+$$
+Remember that we have 300 dyads for each direction (A-B and B-A), and because we have $d_{AB}$ and $d_{BA}$, we have estimates of all of these dyad interactions. So the model output just for the dyad terms has 600 parameters, as well as all of our other terms for giving and receiving for each A. But Hamiltonian Monte Carlo manages this no problem at all. Richards inspection of the correlation matrices shows us that for `Rho_gr` (giving and receiving), there is a negative correlation. This is because there are a few important/wealthy households that provide subsistence for others and don't take much back. For the `Rho_d` there is a really strong positive correlation i.e. in general if A gives a lot to B, B gives a lot to A. These are usually to maintain kinship bonds etc. Super interesting stuff with this model.
+
+# Lecture 19 - Gaussian Processess
+
+### Continuous covariance - Spatial autocorrelation (phylo gets its own markdown)
+
+Starting with a story on American politics. Birth year with republican vote share for different elections. As you get later in time i.e. more recent elections, more younger ages (later birth years) can vote. Interesting phenomenon is that people born from similar birth years tend to vote the same way. People born in the mid 60s vote for republican more, regardless of election year. Wouldn't see this with age. There are cohort effects for political preference, and this seems to last for life. 
+
+Doesn't mean something at birth lol but something happens to cohorts at some point in their life, and seems to be happening in peoples early voting (18) that sets their voting off for life. Who is in power, and a are they popular at that age for people seems to predict voting preference. Nice paper looking at this fit a different weighting effect for how current president popularity predicts on each age. Complex non-linear pattern with age an weighting of the president popularity. 
+
+But age isn't really a category, its a continuous variable. 18 more similar to 19 and 17 than to 25. We need to deal with continuous categories like age. 
+
+Thus far we have been treating our clusters in varying effects models as categories. But can't just model them in a linear way because the relationships are complex. But not really categories. So they like ordered categories but just a lot of them. Location, phylogenetic distance are proxies for other things in nature (evolutionary distance and similar environment) that act in this way.
+
+The set of tools to deal with these are **Gaussian Process Regression**. Pooling for infinite numbers of Clusters. Not very informative title, but normal distribution in there.
+
+## Spatial Autocorrelation
+
+Return to our tool use in pacific islands example. Want to predict the number of tools on each island as a function of each islands connectivity to other islands. Had a category for this before. But we can use spatial distance as a proxy for this and this is one of these continuous variable, and a proxy for for similar geology/ecology/connectivity between islands.
+
+Lets remind ourselves of the data and plot the spatial distances, which Richard has also put in the package
+
+```{r Kline tool plots, fig.width= 13, fig.height= 6}
+data(Kline2)
+data(islandsDistMatrix)
+Kline <- mutate(Kline2, pop_std = as.numeric(scale(log(population))),
+                society = 1:10)
+
+## Data cleaning for later
+kline_list <- list(tools = Kline$total_tools,
+                   population = Kline$population,
+                   society = Kline$society,
+                   Dmat = islandsDistMatrix)
+
+a <- ggplot(Kline,aes(x = pop_std, y = total_tools)) +
+   geom_point(size = 4, colour = "green" ) +
+   geom_text(aes(label = culture, colour = NULL),
+             nudge_y = 2.3, nudge_x = 0.08, show.legend = F) +
+   labs(x = "Standardised population size", y = "Total number of tools") +
+   theme_bw(base_size = 14) + theme(panel.grid = element_blank())
+
+b <- tibble(island1 = rownames(islandsDistMatrix), as_tibble(islandsDistMatrix)) %>% 
+   pivot_longer(-island1) %>% 
+   ggplot(aes(x = island1, y = name)) +
+   geom_tile(aes(fill = value)) +
+   geom_text(aes(label = round(value,2))) +
+   scale_fill_viridis_c(option = "D",begin = 0.1, 
+                        end = 0.8, name = "Distance\n(1000 km)") +
+   scale_x_discrete(expand = c(0,0)) +
+   scale_y_discrete(expand = c(0,0)) +
+   labs(x = NULL, y = NULL) +
+   theme_bw(base_size = 14)
+
+grid.arrange(a,b, ncol = 2, widths = c(4,5))
+
+```
+
+We can think of this like a map of confound threat - We think that tool use is going to be more similar in islands that are close together.
+
+We're going to use the scientific tools model, where we are modelling our expected number of tools $\lambda$ as a Poisson, and with our innovation $\alpha$, our diminishing returns $\beta$ and our loss $\gamma$
+
+$$
+\begin{aligned}
+\text{TOOL}_i &\sim \text{Poisson}(\lambda_i) \\
+\lambda_i &= \alpha P^{\beta}_{i}/\gamma
+\end{aligned}
+$$
+We get the Gaussian process of spatial autocorrelation in here by adding in a factor for our society. We add in a term $k$ which is a varying effect of the society at each observation $i$. We exponentiate it because it has to be positive, following $\lambda$ which is the rate. It as a factor, which means that it adjusts our expectation for the whole equation. So, when or value of $k = 0$, indicating no effect of society, then $\exp0 = 1$ so the equation doesn't change. If $k$ is negative, then $\lamda$ is worse proportionally than expected, and if greater than 0 then it is better than expected.
+
+$$
+\begin{aligned}
+\text{TOOL}_i &\sim \text{Poisson}(\lambda_i) \\
+\lambda_i &= \exp({k_{\text{SOCIETY}[i]}})\alpha P^{\beta}_{i}/\gamma
+\end{aligned}
+$$
+
+We are going to estimate $k$ using the matrix of spatial distances for all the islands. Not distinct category memberships like before.
+
+## The Gaussian process
+
+At the heart of the Gaussian process regression is the multivariate gaussian prior for the intercepts with a covariance matrix **K**. We also define our covariance matrix, which stores values between society $i$ and society $j$
+
+$$
+\begin{aligned}
+\begin{bmatrix} k_1 \\ k_2 \\ k_3 \\ \cdots \\ k_{10} \end{bmatrix} &\sim \text{MVNormal}\left(\begin{bmatrix} 0 \\ 0 \\ 0 \\ \cdots \\ 0 \end{bmatrix}, \textbf{K}\right) \\ \\
+K_{ij} &= \eta^2 + \exp(-\rho^2 D^2_{ij}) + \delta_{ij}\sigma^2
+\end{aligned}
+$$
+So this time we're building the covariance matrix not just with info on the variance and covariance of our two clusters. We parameterise it from the distance matrix. This is sometimes called the *L2norm* formulation, a common way of incorporating spatial autocorrelation. It has just three parameters, $\eta$, $\rho$ and $\sigma$. 
+
+So **K** is our covariance between islands, $\eta^2$ is the maximum covariance, $\rho^2$ is a rate of decline with distance, $D^2_{ij}$ is our distance squared. *This bit with $e$ to the power of minus something squared is out explicit Gaussian Part of the Gaussian process.* It gives a bell curve in shape. Then our final part $\delta_{ij}\sigma^2$ is sometimes called the jitter, where the $\delta$ is just an identity function telling you in binary whether i and j are equal ($\delta_{ij} = 1$) or different ($\delta_{ij} = 0$). This turns the variance, $\sigma^2$ of an island with itself on and off. So gives the variance of an island with itself when you have multiple observations in your cluster (important for you). This isn't needed here really, so we just set our sigma value at something arbritrary above 0. The other two parameters need priors though.
+
+The part in the middle is the key part, creating this Gaussian decline in our covariance with distance. If it were linear, it would be much more exponential in decline, but because we square it it creates a nice smooth decline with distance. 
+
+Our full joint model is 
+
+$$
+\begin{aligned}
+\text{TOOL}_i &\sim \text{Poisson}(\lambda_i) \\
+\lambda_i &= \exp({k_{\text{SOCIETY}[i]}})\alpha P^{\beta}_{i}/\gamma \\
+\textbf{k} &\sim \text{MVNormal}((0,0,\ldots,0), \textbf{K}) \\
+\textbf{K}_{ij} &= \eta^2 + \exp(-\rho^2 D^2_{ij}) + \delta_{ij}\sigma^2 \\
+\alpha &\sim \text{Exponential}(1) \\
+\beta &\sim \text{Exponential}(1) \\
+\eta^2 &\sim \text{Exponential}(2) \\
+\rho^2 &\sim \text{Exponential}(0.5)
+\end{aligned}
+$$
+And that is it. This time our **K** matrix is specified with a special prior which does the calculations for us called `cov_GPL2` in `rethinking``. Richard did some prior predictive simulation for the rates of rho and eta in the covariance matrix. These both imply a pretty large drop-off in spatial covariance as you move away. This will get shifted a bit with our posterior. 
+
+## Fitting a Gaussian Process L2 distance model
+
+Now lets fit it.
+
+```{r tools spatial ulam, error = F, results = F, mesage = F}
+m14.8 <- ulam(alist(
+   # model
+   tools ~ dpois(lambda),
+   lambda <- (a*population^b/g)*exp(k[society]),
+   
+   # Gaussian process - our multivariate varying effect and distance cov matrix
+   vector[10]:k ~ multi_normal(0, SIGMA),
+   matrix[10,10]:SIGMA <- cov_GPL2(Dmat, etasq, rhosq, 0.01),
+   
+   # fixed priors
+   c(a,b,g) ~ dexp(1),
+   etasq ~ dexp(2),
+   rhosq ~ dexp(0.5)),
+   data = kline_list, chains = 4, cores = 4, iter = 2000)
+```
+
+And now we want to take a look at this model. We're going to pull out some posterior predictions for the median relationship between population size and tools, excluding our distance measure. Then, we're going to compute the spatial covariance at the median from our matrix **K** by pushing our rho and eta through our equation again, and see how the spatial covariance actually looks between populations. Richard also shows the posterior covariance with distance and the matrix.
+
+```{r kline spatial post, fig.width = 7, fig.height= 7}
+precis(m14.8, depth = 2)
+
+kpost <- extract.samples(m14.8)
+
+## Compute the covariance matrix from the posterior
+K <- matrix(0,nrow = 10, ncol = 10)
+for(i in 1:10){
+   for(j in 1:10){
+      K[i,j] <- median(kpost$etasq)*
+         exp(-median(kpost$rhosq)*islandsDistMatrix[i,j]^2)}}
+
+diag(K) <- median(kpost$etasq) + 0.01
+
+# convert to correlation matrix
+Rho <- round(cov2cor(K), 2)
+
+# convert to data
+Rho_dat <- tibble(as_tibble(Rho), society1 = 1:10) %>% 
+   pivot_longer(-society1, names_to = "society2", values_to = "Corr",
+                names_prefix = "V") %>% 
+   mutate(society2 = as.integer(society2)) %>% 
+   left_join(x = ., y = Kline[,c(11,4,9)], by = c("society1" = "society")) %>% 
+   left_join(x = ., y = Kline[,c(11,4,9)], by = c("society2" = "society"),
+             suffix = c("1", "2"))
+
+# Posterior predictions excluding d
+logpop.seq <- seq(6,14,length.out = 30)
+lambda <- sapply(logpop.seq, function(lp) exp(kpost$a + kpost$b*lp - kpost$g))
+preddat <- tibble(logpop = logpop.seq,
+                  md = apply(lambda, 2, median),
+                  lwr = apply(lambda, 2, PI, prob = 0.8)[1,],
+                  upr = apply(lambda, 2, PI, prob = 0.8)[2,])
+   
+# The plot
+ggplot(Kline,aes(x = logpop, y = total_tools)) +
+   geom_segment(data = Rho_dat, 
+                aes(x = logpop1, xend = logpop2,
+                    y = total_tools1, yend = total_tools2, alpha = Corr)) +
+   geom_point(aes(size = logpop), show.legend = F) +
+   geom_line(data = preddat, aes(x = logpop, y = md),
+             colour = "cornflowerblue") +
+   geom_text(aes(label = culture, colour = NULL),
+             nudge_y = 3, nudge_x = 0.08) +
+   labs(x = "log Population size", y = "Number of tools") +
+   theme_bw(base_size = 14) + theme(panel.grid = element_blank())
+```
+
 
 
 
