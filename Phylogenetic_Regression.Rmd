@@ -1,0 +1,278 @@
+---
+title: "Phylogenetic Regression in `rethinking`"
+author: "John Jackson"
+date: "October 2020"
+output:  
+   prettydoc::html_pretty:
+    theme: cayman
+    highlight: haddock
+---
+
+\usepackage{amsmath}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This markdown follows the introduction of Phylogenetic Regression in the Statistical Rethinking book by Professor Richard McElreath as presented on [YouTube](https://www.youtube.com/channel/UCNJK6_DZvcMqNSzQdEkzvzA) from his Winter 2019 lecture 19, plus detailed notes from the book. You need the following packages:
+
+```{r packages, warning=FALSE, message = F}
+require(tidyverse)
+require(gridExtra)
+require(ggridges)
+require(rstan)
+require(rethinking)
+require(dagitty)
+require(MASS)
+require(ape)
+require(ggtree)
+require(tidyree)
+```
+
+## Phylogenetic distance as a Gaussian Process 
+
+Just as with geographic distance, species can be more or less distant to one another. This time however their differences are not physical but rather temporal, describing their evolutionary distance. In other words - their temporal distance is how long has it been since there was a common ancestor between them. Evolutionary biologists use this information to investigate how evolution has affected different phenotypic traits. At its heart, *does the phylogenetic covariance between species matter when making inference about traits?*
+
+Phylogenetic distance can either act in a more direct way, by assuming that traits are evolving at a relatively neutral rate. In this case, random changes occurring at some rate from the time two species split will influence their trait covariance. The second is that the effect of phylogenetic distance is indirect, acting as a proxy for big selection sweeps. For example, think of flight in birds, which occurred in a big selection process. But flight also has a strong causal influence on lots of other traits in birds, and so phylogenetic distance is a proxy for this.
+
+These phylogenetic methods don't work automatically, have to think carefully about the causal links between your traits. Phylogenetic methods are often applied to situations where they are not appropriate. So lets explore how to do this in a conservative and appropriate way.
+
+## Group size and Brain size
+
+Lets consider the example of group size on brain size in animals. Did the evolution of group living facilitate the evolution of big brains. Lots of hypotheses in the literature on why these two traits might be linked. There are also many potential confounds here that influence both group and brain size. One of these confounds is definitely body mass. However, brains, bodies and group behaviours are all traits that may be linked to the evolutionary history of a species, or at least to other unobserved confound that are linked to the. It is therefore highly plausible that there is some benefit from adding phylogenetic information. Lets see this in DAG form:
+
+```{r Group size Brain Size DAG, fig.width = 4, fig.height = 3, echo = F}
+dag_GB <- dagitty("dag{G -> B; M -> G; M -> B; 
+                  U -> G; U -> M; U -> B; P -> U
+                  U [unobserved]}")
+coordinates(dag_GB) <- list(x = c(G = 0, M = 1, U = 1, B = 2, P = 2), 
+                              y = c(G = 0, M = 1, U = 2, B = 0, P = 2))
+drawdag(dag_GB)
+```
+
+The strategy is to close backdoor paths from G to B, which would include routes through U. However, because we can't use U directly and don't know what it is, we use P as a proxy and try to close that backdoor. So our approach is to use the Phylogenetics to reconstruct the covariance between Group size and Brain size.
+
+This is the essence of **Phylogenetic Regression**. The original method uses phylogenetic distance in a a highly constrained way and assumes a neutral model of divergence between species over time. There are then many variants of this that we may want to consider, to be more flexible in our model of phylogenetic distance.
+
+Lets explore this in Primates, a key group for understanding brains ize and group size.
+
+## Primate Brain Size
+
+First lets load the data and have look at a plot of the brain size across species.
+
+```{r primate brain size tree, fig.width= 15, fig.height= 15}
+# The data
+data(Primates301)
+data(Primates301_nex)
+
+# primate data
+primate <- Primates301 %>% 
+  mutate(name = as.character(name)) %>% 
+  drop_na(group_size, body, brain) %>%
+  mutate(brain_sc = standardize(log(brain)))
+spp_obs <- primate$name
+
+# trim the tree and merge with right data
+trimmed_tree <- keep.tip(Primates301_nex, spp_obs)
+
+treeplot_dat <- as_tibble(trimmed_tree) %>% 
+  full_join(x = ., y = dplyr::select(primate, name, brain = brain_sc), 
+            by = c("label" = "name")) %>% 
+  tidytree::as.treedata()
+
+# the tree
+ggtree(treeplot_dat, aes(colour = brain), layout = "circular", size = 0.6) +
+  geom_tippoint(aes(colour = brain), size = 5,show.legend = FALSE) +
+  geom_tiplab(aes(label = gsub("_", " ", label)), size = 3, colour = "black", offset = 1) +
+  scale_color_viridis_c(option = "C") +
+  guides(colour = guide_colorbar(barheight = 25, barwidth = 2.5, 
+                                 title = "Brain size", title.theme = element_text(size = 15)))
+
+```
+
+We can see that for standardised brain size, there seems to be some clear phylogenetic clusters where there is covariance in brain size between species. 
+
+We'll standardise the data across the whole dataset for analyses with Markov chains (more efficient as a list).
+
+```{r primate data standard}
+primate_list <- list(
+  N_spp = nrow(primate),
+  M = standardize(log(primate$body)),
+  G = standardize(log(primate$group_size)),
+  b = standardize(log(primate$brain))
+)
+```
+
+## The Gaussian Process model
+
+We're going to now explore three different models for this question in primates, to demonstrate how to build a Gaussian process for these data:
+
+1. **Ordinary regression** built in an unusual way.
+2. **Brownian motion model**
+3. **Ornstein-Uhlbeck process**
+
+So for model 1 we're going to just build a linear regression. However, we're going to specify it in a multivariate way, so that our three models are more comparable in their formation. So, our general model for our standardised Brain size $\textbf{b}$ is given by
+
+$$
+\begin{aligned}
+\textbf{b} &\sim \text{MVNormal}(\mu, \textbf{S}) \\
+\mu_i &= \alpha + \beta_{G}G_i + \beta_{M}M_i \\
+\textbf{S} &= \sigma^2\textbf{I}
+\end{aligned}
+$$
+
+Where instead of a simple normal distribution for $\textbf{b}$, we look at the vector of $\textbf{b}$ with a multi-variate normal with a mean $\mu$ and we capture the covariance matrix $\textbf{S}$. Then we have our mean $\mu$ as normal given by a linear model with effects of group size $G$ and body mass $M$ (all standardised).
+
+The covariance matrix $\textbf{S}$ in the multivariate normal is given by the normal standard deviation that we have used throughout the course. However we also have the identity matrix $\textbf{I}$ which is the unusual bit for this model. We are just specifying that there are 1's only in the diagonal, and 0's everywhere else. So it's a correlation matrix without any correlation, or essentially just the standard deviation. 
+
+## 1. Multivariate linear regression
+
+So this is an ordinary linear regression, but written as having a single multi-variate outcome. Now we can fit this model to the data, first adding our identity matrix to the data list.
+
+```{r primate mod 1, error = F, results = F, mesage = F}
+# Identity matrix
+primate_list$Imat <- diag(nrow(primate))
+
+# The model
+primate_linear_regression <- ulam(alist(
+  # The model
+  b ~ multi_normal(mu, SIGMA),
+  mu <- alpha + betaM*M + betaG*G,
+  
+  # Our adaptive prior - null in this case
+  matrix[N_spp,N_spp]:SIGMA <- sigma_sq*Imat,
+  
+  # Our fixed priors
+  alpha ~ normal(0,1),
+  c(betaM, betaG) ~ normal(0,0.5),
+  sigma_sq ~ exponential(1)),
+  data = primate_list, 
+  chains = 4, cores = 4)
+```
+And lets have a look at the model results.
+
+```{r lin reg res}
+precis(primate_linear_regression)
+```
+
+We can see here that there is a small but reliable positive effect of group size on brain size, and a strong positive effect of body mass on brain size. But we aren't accounting at all for the covariance between species. So we need to Incorporate the phylogenetic relationships to get a better handle on this.
+
+## 2. Brownian motion model
+
+Now we incorporate the phylogenetic relationships between species. The first model we are going to use to do this is the Brownian motion model, which is the most traditional and conservative (too much so). As the name suggests, here the covariance matrix is treated as a Brownian Motion model with Gaussian random walks between species based on their distance. This is assuming linear, drift with evolutionary time, we get a neutral type model of species distances. Of course, this is a strong assumption because we know that lots of traits are under strong selection.
+
+First step we have to do is compute the Brownian motion covariance matrix, which will replace our $\textbf{I}$ from before. The functions to do this are all in the `ape` package, to compute the implied covariance matrix, and the implied distance matrix from the tree. We also look at the covariance with phylogenetic distance relationship. These are just the linear inverse of each other.
+
+```{r bm model cov, fig.width= 5, fig.height=5}
+Rbm <- corBrownian(phy = trimmed_tree) # correlation matrix
+V <- vcv(Rbm) # variance covariance matrix
+Dmat <- cophenetic(trimmed_tree) # distance matrix
+
+# relationship between the distance and covariance
+tibble(pd = as.numeric(Dmat), cov = as.numeric(V)) %>% 
+  ggplot(aes(x = pd, y = cov)) + 
+  geom_point(size = 4, alpha = 0.1) +
+  labs(x = "Phylogenetic distance", y = "Covariance") +
+  theme_bw(base_size = 13) + theme(panel.grid = element_blank())
+```
+
+```{r primate mod 2, error = F, results = F, mesage = F}
+
+# Adding our covariance matrix to our list as a correlation matrix
+V <- V[spp_obs, spp_obs]
+primate_list$R <- V/max(V)
+
+# The Brownian motion model
+primate_brownian_motion <- ulam(alist(
+  # The model
+  b ~ multi_normal(mu, SIGMA),
+  mu <- alpha + betaM*M + betaG*G,
+  
+  # Our adaptive prior - Corre
+  matrix[N_spp,N_spp]:SIGMA <- sigma_sq*R,
+  
+  # Our fixed priors
+  alpha ~ normal(0,1),
+  c(betaM, betaG) ~ normal(0,0.5),
+  sigma_sq ~ exponential(1)),
+  data = primate_list, 
+  chains = 4, cores = 4)
+```
+
+```{r brownian motion res}
+plot(precis(primate_brownian_motion), 
+     labels = c("Intercept", "Group size effect", "Body mass effect", "Covariance matrix Standard deviation"),
+     xlab = "Posterior estimate")
+```
+So, in stark contrast to our linear regression, the group size effect drops out completely and hovers around 0. This suggests that there is a lot of clustering of brain size in the tree, and also a lot of clustering in group size. Thus, the covariance we placed in this model accounts largely for the apparently spurious effect of group size on Brain size. 
+
+**However**, the Brownian motion model is assuming a very rigid covariance between species based on phylogenetic distance. This severe decline is not necessarily always justified. This is often adjusted with **Pagel's Lambda**, which is a common factor that scales all of the species correlations. It maintains the negative linear effect of phylogenetic distance on covariance though. This isn't usually best though because this negative linear decay is pretty arbitrary.
+
+## 3. The Ornstein-Uhlenbeck model
+
+An alternative to the linear covariance-phylogenetic distance model is the Ornstein-Uhlenback process, often called the **OU process**. This is a damped Brownian motion process which tends to return towards some mean(s). In practise this constrains the variation and makes the relationship between phylogenetic distance and covariance **non-linear**. More precisely, in the OU process we define an exponential distance kernel (as with a spatial distance example), which gives the covariance between two species $i$ and $j$ as
+
+$$K(i,j) = \eta^2 \exp(-\rho^2D_{ij})$$
+Here with eta and rho (squared), we have two parameters that describe the shape of the exponential decay function. Then we can model this as a **Guassian process** just as before. However, this isn't yet acknowledged fully in the literature. There is no universally correct way to include phylogenetic distance in to a causal inference model, because we always need to reconstruct patterns with our unobserved variables that drive the distances between species and the causal relationships.
+
+All you then need to build the OU model as a Gaussian process is the distance matrix for phylogenetic relatedness between different species. Then, we fit this Gaussian process using the OU process kernel from `rethinking`, which is just specifying a L1 norm Gaussian process. We then are fitting half-normal distributions for our eta and rho squared parameters (can only be positive because they are squared). Other than that the model remains the same as before.
+
+```{r primate mod 3, error = F, results = F, mesage = F}
+# Adding just the distance matrix to our list as a correlation matrix
+Dmat <- Dmat[spp_obs, spp_obs]/max(Dmat)
+primate_list$Dmat <- Dmat
+
+# The Brownian motion model
+primate_OU_model <- ulam(alist(
+  # The model
+  b ~ multi_normal(mu, SIGMA),
+  mu <- alpha + betaM*M + betaG*G,
+  
+  # Our adaptive prior - UL gaussian process L1
+  matrix[N_spp,N_spp]:SIGMA <- cov_GPL1(Dmat, eta_sq, rho_sq, 0.01),
+  
+  # Our fixed priors
+  alpha ~ normal(0,1),
+  c(betaM, betaG) ~ normal(0,0.5),
+  eta_sq ~ half_normal(1,0.25),
+  rho_sq ~ half_normal(3,0.25)),
+  data = primate_list, 
+  chains = 4, cores = 4)
+```
+
+```{r UO res}
+plot(precis(primate_OU_model), 
+     labels = c("Intercept", "Group size effect", "Body mass effect", "eta squared", "rho squared"),
+     xlab = "Posterior estimate")
+```
+
+Now we have a more flexible Gaussian process for the covariance with phylogenetic distance, the group size effect has actually increased and no longer overlaps 0. It suggests that the strong constraints of the Brownian Motion model were soaking up the variation in the cluster of species. 
+
+## Posterior comparisons
+
+Finally, lets have a look at some of the implications of the posteriors for the two different Gaussian processes that we have run.
+
+```{r primate model comparison}
+# bm_post <- extract.samples(primate_brownian_motion)
+# 
+# n_samples <- 1000
+# logprob <- sapply(1:n_samples,
+#                   function(s){
+#                     mu <- bm_post$alpha[s] + bm_post$betaM[s]*primate_list$M + bm_post$betaG[s]*primate_list$G
+#                     dmvnorm(x = as.numeric(primate_list$b), mean = as.numeric(mu), 
+#                             sigma = primate_list$R*bm_post$sigma_sq[s], log = TRUE)
+#                   })
+# 
+# 
+# 
+# mu <- bm_post$alpha[1] + bm_post$betaM[1]*primate_list$M + bm_post$betaG[1]*primate_list$G
+# 
+# dmvnorm(as.numeric(primate_list$b), mean = as.numeric(mu))
+
+```
+
+
+
+
+
+
