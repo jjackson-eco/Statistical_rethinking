@@ -252,7 +252,7 @@ Now we have a more flexible Gaussian process for the covariance with phylogeneti
 
 Finally, lets have a look at some of the implications of the posteriors for the two different Gaussian processes that we have run.
 
-```{r primate model comparison}
+```{r primate model posteriors}
 # bm_post <- extract.samples(primate_brownian_motion)
 # 
 # n_samples <- 1000
